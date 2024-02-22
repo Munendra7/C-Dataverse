@@ -2,48 +2,30 @@ using System;
 using System.Runtime.InteropServices;
 using System.Security;
 
-public class Program
+class Program
 {
     static void Main(string[] args)
     {
-        // User to impersonate (Windows account)
+        // Specify the username and password directly in the code
         string userName = "domain\\username"; // Replace with the desired Windows user
+        string passwordStr = "user_password"; // Replace with the user's password
 
-        Console.WriteLine("Enter password for the user:");
-        SecureString password = GetSecurePassword();
+        // Convert the password to a SecureString
+        SecureString password = new SecureString();
+        foreach (char c in passwordStr)
+        {
+            password.AppendChar(c);
+        }
 
-        // Pass the user name and password for impersonation
+        // Pass the username and password for impersonation
         using (ImpersonationContext context = new ImpersonationContext(userName, password))
         {
             // Your code here will run under the security context of the specified user
             Console.WriteLine($"Current user: {System.Security.Principal.WindowsIdentity.GetCurrent().Name}");
         }
-    }
 
-    // Helper method to securely prompt for password
-    private static SecureString GetSecurePassword()
-    {
-        SecureString securePassword = new SecureString();
-        ConsoleKeyInfo key;
-
-        do
-        {
-            key = Console.ReadKey(true);
-
-            // Ignore any key other than Enter (when finished typing)
-            if (key.Key != ConsoleKey.Enter)
-            {
-                // Append the character to the SecureString
-                securePassword.AppendChar(key.KeyChar);
-                Console.Write("*");
-            }
-        } while (key.Key != ConsoleKey.Enter);
-
-        Console.WriteLine(); // Add newline after password prompt
-
-        // Make the SecureString read-only
-        securePassword.MakeReadOnly();
-        return securePassword;
+        Console.WriteLine("Press any key to exit...");
+        Console.ReadKey();
     }
 }
 
@@ -55,7 +37,6 @@ public class ImpersonationContext : IDisposable
     public ImpersonationContext(string userName, SecureString password)
     {
         IntPtr token = IntPtr.Zero;
-        IntPtr tokenDuplicate = IntPtr.Zero;
 
         try
         {
@@ -69,26 +50,15 @@ public class ImpersonationContext : IDisposable
                 throw new InvalidOperationException("Failed to logon user.");
             }
 
-            // Duplicate the token for impersonation
-            success = DuplicateToken(token, SecurityImpersonationLevel.Impersonation, out tokenDuplicate);
-            if (!success)
-            {
-                throw new InvalidOperationException("Failed to duplicate token.");
-            }
-
             // Start impersonating
-            _impersonationContext = System.Security.Principal.WindowsIdentity.Impersonate(tokenDuplicate);
+            _impersonationContext = System.Security.Principal.WindowsIdentity.Impersonate(token);
         }
         finally
         {
-            // Close the token handles
+            // Close the token handle
             if (token != IntPtr.Zero)
             {
                 CloseHandle(token);
-            }
-            if (tokenDuplicate != IntPtr.Zero)
-            {
-                CloseHandle(tokenDuplicate);
             }
         }
     }
@@ -106,9 +76,6 @@ public class ImpersonationContext : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
 
-    [DllImport("advapi32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private extern static bool DuplicateToken(IntPtr ExistingTokenHandle, SecurityImpersonationLevel ImpersonationLevel, out IntPtr DuplicateTokenHandle);
-
     private enum LogonType : int
     {
         Interactive = 2,
@@ -125,13 +92,5 @@ public class ImpersonationContext : IDisposable
         WinNT35 = 1,
         WinNT40 = 2,
         WinNT50 = 3,
-    }
-
-    private enum SecurityImpersonationLevel : int
-    {
-        SecurityAnonymous = 0,
-        SecurityIdentification = 1,
-        SecurityImpersonation = 2,
-        SecurityDelegation = 3,
     }
 }
