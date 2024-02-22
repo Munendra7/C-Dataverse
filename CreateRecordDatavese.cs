@@ -7,7 +7,7 @@ class Program
     static void Main(string[] args)
     {
         // Connection string for connecting to Dataverse
-        string connectionString = "AuthType=ClientCredentials;Url=<your_dataverse_url>;Username=<your_email>;Password=<your_password>";
+        string connectionString = "AuthType=ClientSecret;Url=<your_dataverse_url>;ClientId=<your_client_id>;ClientSecret=<your_client_secret>";
 
         // Create a CrmServiceClient object using the connection string
         CrmServiceClient service = new CrmServiceClient(connectionString);
