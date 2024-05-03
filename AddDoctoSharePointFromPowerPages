@@ -1,0 +1,29 @@
+async function uploadFile(file: File) {
+    const url = '{PortalsiteUrl}/_services/sharepoint-addfiles/18f78c44-69c0-ee11-9079-6045bd006ef2';
+
+    const formData = new FormData();
+    formData.append('files', file);
+    formData.append('regardingEntityLogicalName', 'cr5f7_sharepointintegrationdemo');
+    formData.append('regardingEntityId', 'e44c2c68-3309-ef11-a73d-000d3a366872');
+    formData.append('overwrite', 'true');
+    formData.append('folderPath', '/test');
+    formData.append('__RequestVerificationToken', 'LJF-iaotXKs1E5aR81yIdlP_0UbBLZXNBmVw7sdNMGoNgWSZCB5S_Kqjs0I_y-oWxHmMJT-4MAeu2KrhCrjel1xDLMKyTJm5I7VLN0Wm1KdSlbSV2eRqu_bOrM5-dWjZskH-o1B_qexcGiAIoBbLfw2');
+
+    const response = await fetch(url, {
+        method: 'POST',
+        body: formData
+    });
+
+    const responseData = await response.text();
+    console.log(responseData);
+}
+
+// Assuming you have an HTML file input control with id "fileInput"
+const fileInput = document.getElementById('fileInput') as HTMLInputElement;
+
+fileInput.addEventListener('change', (event) => {
+    const selectedFile = (event.target as HTMLInputElement).files[0];
+    if (selectedFile) {
+        uploadFile(selectedFile);
+    }
+});
