@@ -24,9 +24,6 @@ const fileInput = document.getElementById('fileInput') as HTMLInputElement;
 fileInput.addEventListener('change', (event) => {
     const selectedFile = (event.target as HTMLInputElement).files[0];
 
-
-48b0c9bb845b439194a77bfaf531dcac
-p8e-Osxi_cJorOrYYszOJrr5EMdiGrdTaTV-
     if (selectedFile) {
         uploadFile(selectedFile);
     }
