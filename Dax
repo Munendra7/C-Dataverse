@@ -5,7 +5,7 @@ VAR TopStatesTable =
         SUMMARIZE(
             ALLSELECTED('BVBT Portfolio'),
             'BVBT Portfolio'[State],
-            "StateCount", COUNT('BVBT Portfolio'[State])
+            "StateCount", COUNTROWS('BVBT Portfolio')
         ),
         [StateCount],
         DESC
@@ -16,7 +16,7 @@ VAR TopStatesList =
 
 VAR OtherStatesCount = 
     CALCULATE(
-        COUNT('BVBT Portfolio'[State]),
+        COUNTROWS('BVBT Portfolio'),
         ALLSELECTED('BVBT Portfolio'),
         NOT('BVBT Portfolio'[State] IN TopStatesList)
     )
@@ -27,7 +27,7 @@ RETURN
 IF(
     CurrentState <> "Others",
     CALCULATE(
-        COUNT('BVBT Portfolio'[State]),
+        COUNTROWS('BVBT Portfolio'),
         FILTER(
             ALLSELECTED('BVBT Portfolio'),
             'BVBT Portfolio'[State] = CurrentState
