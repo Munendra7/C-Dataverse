@@ -11,11 +11,14 @@ VAR TopStatesTable =
         DESC
     )
 
+VAR TopStatesList = 
+    SELECTCOLUMNS(TopStatesTable, "State", 'BVBT Portfolio'[State])
+
 VAR OtherStatesCount = 
     CALCULATE(
         COUNT('BVBT Portfolio'[State]),
         ALLSELECTED('BVBT Portfolio'),
-        NOT('BVBT Portfolio'[State] IN VALUES(TopStatesTable[State]))
+        NOT('BVBT Portfolio'[State] IN TopStatesList)
     )
 
 VAR CurrentState = SELECTEDVALUE('Pseudo States Table'[State])
