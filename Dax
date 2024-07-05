@@ -11,12 +11,6 @@ VAR TopStatesTable =
         DESC
     )
 
-VAR TopStatesCount = 
-    CALCULATE(
-        COUNT('BVBT Portfolio'[State]),
-        KEEPFILTERS(TopStatesTable)
-    )
-
 VAR OtherStatesCount = 
     CALCULATE(
         COUNT('BVBT Portfolio'[State]),
