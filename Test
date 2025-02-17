@@ -1,0 +1,44 @@
+AI Agent Architecture Overview (with Example)
+
+1. User Interaction
+	•	Process:
+	•	The user provides a prompt (a question or task).
+	•	The agent processes the input and delivers a response.
+	•	Example:
+User prompt: “Summarize the latest sales report.”
+Agent response: “The total revenue increased by 15%, with the highest sales in the North region.”
+
+2. Agent Core Function
+	•	Process:
+	•	Acts as the central controller, coordinating tasks between the user, LLM, tools, and memory.
+	•	Ensures smooth communication and task execution.
+	•	Example:
+The agent receives the prompt, decides if it needs to retrieve external data (from tools) or refer to past conversations (from memory), and crafts a response.
+
+3. Prompt Template
+	•	Process:
+	•	Provides a structured format for the LLM, ensuring consistent outputs.
+	•	Includes specific instructions to guide the model’s behavior.
+	•	Example:
+The agent uses a predefined template:
+“Given the user’s question, extract key figures from the latest report and provide a brief summary.”
+
+4. Large Language Model (LLM)
+	•	Process:
+	•	Handles reasoning and planning, processes natural language, and generates intelligent outputs.
+	•	Example:
+After understanding the prompt, the LLM interprets the sales report and summarizes key insights.
+
+5. Tools
+	•	Process
+	•	Perform external actions like fetching data, running calculations, or integrating with APIs.
+	•	Example:
+The agent uses a data extraction tool to pull information from the latest sales report before summarizing it.
+
+6. Memory
+	•	Process:
+	•	Stores and retrieves previous interactions for continuity and context.
+	•	Example:
+If the user later asks, “How does this compare to last year?” the agent retrieves last year’s sales data for comparison.
+
+Would you like to expand on how each component integrates, or add a live demo scenario?
