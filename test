@@ -33,7 +33,7 @@ export default class GridComponent extends React.Component<IGridComponentProps, 
     ]);
 
     const combinedData = uwRequests.map(request => {
-      const files = uwRequestsLibrary.filter(library => library.requestId.Id === request.Id).map(record => ({
+      const files = uwRequestsLibrary.filter(lib => lib.requestId?.Id === request.Id).map(record => ({
         FileLeafRef: record.FileLeafRef,
         File: record.File,
         FileRef: record.FileRef,
@@ -73,11 +73,67 @@ export default class GridComponent extends React.Component<IGridComponentProps, 
   }
 
   _FieldTypeValue = (gridData: any, row: any) => {
-    // (same logic as before)
+    const field = row.fieldName;
+    const type = row.type;
+
+    switch (type) {
+      case 'text':
+      case 'textarea':
+      case 'dropdown':
+      case 'date':
+        return gridData[field] || '';
+
+      case 'person':
+        return gridData[field]?.Title || '';
+
+      case 'multiuser':
+        return gridData[field]?.map((u: any) => u.Title).join(', ') || '';
+
+      case 'url':
+        return gridData[field] ? gridData[field].Url || gridData[field] : '';
+
+      case 'boolean':
+        return gridData[field] ? 'Yes' : 'No';
+
+      case 'file':
+        return gridData.Files?.map((file: any) => file.FileLeafRef).join(', ') || '';
+
+      default:
+        return gridData[field] || '';
+    }
   }
 
   _FieldTypeValueFilterAndSorting = (gridData: any, row: any) => {
-    // (same logic as before)
+    const field = row.fieldName;
+    const type = row.type;
+
+    switch (type) {
+      case 'text':
+      case 'textarea':
+      case 'dropdown':
+        return gridData[field]?.toString() || '';
+
+      case 'date':
+        return gridData[field] ? this.formatDate(gridData[field]) : '';
+
+      case 'person':
+        return gridData[field]?.Title || '';
+
+      case 'multiuser':
+        return gridData[field]?.map((user: any) => user.Title).join(', ') || '';
+
+      case 'url':
+        return gridData[field]?.Url || gridData[field] || '';
+
+      case 'boolean':
+        return gridData[field] ? 'Yes' : 'No';
+
+      case 'file':
+        return gridData.Files?.map((file: any) => file.FileLeafRef).join(', ') || '';
+
+      default:
+        return gridData[field]?.toString() || '';
+    }
   }
 
   onSearch = () => {
