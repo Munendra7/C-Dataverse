@@ -1,0 +1,288 @@
+import * as React from 'react';
+import { IGridComponentProps } from './IGridComponentProps';
+import {ResuableGridComponent} from './component/ResuableGridComponent';
+import {GridColumn} from './component/ConstantFile/columnConstant';
+import { SPOperations } from './component/Methods/SPOperations';
+import { EmptyGridComponent } from './component/EmptyGridComponent';
+import ModalComponent from './component/ModalComponent';
+import { columnName } from './component/ConstantFile/versionHistoryConstant';
+//import { columnName } from './GridComponent';
+
+export default class GridComponent extends React.Component<IGridComponentProps, any> {
+  public _SPOperationsObj: SPOperations;
+
+  constructor(props:any){
+    super(props);
+    this._SPOperationsObj = new SPOperations(this.props.context);
+    this.state={
+        dataSource:[],
+        domChange:false,
+        showModal:false,
+        versionHistoryHTML:"",
+        loader:false
+    }
+    
+  }
+
+  public ModalCancelbtn = ()=>{
+    this.setState({showModal:false,versionHistoryHTML:""})
+  }
+
+  public GetHTML =(html:any)=>{
+    let parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    return doc;
+  }
+
+   componentDidMount = async ():Promise<void>=> {
+    this.setState({
+        loader:true
+    })
+
+    Promise.all([
+        this._SPOperationsObj._GetListItems("UW Requests","*,RequestorUW/EMail,RequestorUW/Title,AssignedTo/EMail,AssignedTo/Title","RequestorUW,AssignedTo"),
+        this._SPOperationsObj._GetListItems("UW Requests Library","requestId/Id,FileRef,FileLeafRef,ID,File/Name,Modified,Editor/Title","File,Editor,requestId")]
+    ).then((result)=>{
+        const uwRequests = result[0]; // Data from the first call
+        const uwRequestsLibrary = result[1]; // Data from the second call
+
+        // Combine data based on matching requestId
+        const combinedData = uwRequests.map(request => {
+            const matchingLibraryRecords = uwRequestsLibrary.filter(libraryRecord => libraryRecord.requestId.Id === request.Id);
+            return {
+                ...request, // Include all fields from "UW Requests"
+                Files: matchingLibraryRecords.map(record => ({
+                    FileLeafRef: record.FileLeafRef,
+                    File: record.File,
+                    FileRef: record.FileRef,
+                    Modified: record.Modified,
+                    Editor: record.Editor
+                }))
+            };
+        });
+        this.setState({
+            dataSource:[...combinedData],
+            domChange:true,
+        },()=>{
+            this.setState({
+                loader:false
+            })
+            console.log("Data",this.state.dataSource)
+        })
+    })
+
+    // let listData = await this._SPOperationsObj._GetListItems("UW Requests","*,RequestorUW/EMail,RequestorUW/Title,AssignedTo/EMail,AssignedTo/Title","RequestorUW,AssignedTo");
+    // this.setState({
+    //     dataSource:[...listData],
+    //     domChange:true,
+        
+    // },()=>{
+    //     this.setState({
+    //         loader:false
+    //     })
+    //     console.log("Data",this.state.dataSource)
+    // })
+  }
+
+  public GetVersionHistoryModal = async(itemID:any)=>{
+    console.log("Hello")
+    let data = await this._SPOperationsObj._GetVersionHistory(itemID,"UW Requests",columnName);
+    this.setState({
+        showModal:true,
+        versionHistoryHTML:data,
+        loader:false
+    });
+    }
+
+  public _FieldTypeValue=(gridData:any, row:any)=>{
+    if(row.fieldType =="URLArray"){
+        if(gridData.hasOwnProperty("Files"))
+        {
+            return gridData["Files"].map((file, index) => (
+                <a style={{ display: "block" }}
+                    key={index} 
+                    onClick={() => {
+                        window.open(`${this.props.context.pageContext.web.absoluteUrl}/_layouts/download.aspx?sourceurl=${file["FileRef"]}`, "_blank");
+                    }} 
+                    href="#" 
+                    target="_blank"
+                >
+                    {file["FileLeafRef"]}
+                </a>
+            ));
+        }
+        else
+        {
+            return("");
+        }
+    }
+    else if(row.fieldType =="VersionHistory"){
+       return(
+      <div>
+        <button className="btn btn-secondary" onClick={async (e)=>{ e.preventDefault();this.setState({loader:true});this.GetVersionHistoryModal(gridData["ID"]); return false;}}>Show Version History</button>
+      </div>
+      )
+    }else if(row.fieldType =="URL"){
+        return(
+        <div>
+            <a  onClick={()=>{
+                window.open(`${this.props.context.pageContext.web.absoluteUrl}/sitepages/UWRequestForm.aspx?pageMode=Edit&ItemId=${gridData["ID"]}&Source=${this.props.context.pageContext.web.absoluteUrl}/SitePages/Dashboard.aspx`,"_blank")
+            }} 
+            href="#" target="_blank">{gridData[row.internalName]}</a>
+        </div>  
+        )
+    }
+    else{
+    if (gridData[row.internalName] !== null && gridData[row.internalName] !== "") {
+        if (row.fieldType === "Lookup") {
+            return gridData[row.internalName]?.["Title"] || "";
+        } else if (row.fieldType === "Array") {
+            let data = "";
+            if (gridData[row.internalName] !== "" && gridData[row.internalName] !== null) {
+                gridData[row.internalName].forEach((ele:any) => {
+                    data += ", " + ele.Title
+                });
+                return data.substring(2);
+            } else {
+                return data
+            }
+        } else if (row.fieldType === "ChoiceArray") {
+          let data = "";
+          if (gridData[row.internalName] !== "" && gridData[row.internalName] !== null) {
+              gridData[row.internalName].forEach((ele:any) => {
+                  data += ", " + ele
+              });
+              return data.substring(2);
+          } else {
+              return data
+          }
+      }
+        
+        else if (row.fieldType === "Percent") {
+            return gridData[row.internalName] + "%";
+        }
+        else if (row.fieldType === "Date") {
+           // let dateObj = new Date(gridData[row.internalName])
+            return this.formatDate(gridData[row.internalName]);
+        }
+        else if (row.fieldType === "boolean") {
+            if (gridData[row.internalName] === true) {
+                return "Yes";
+            }
+            else if (gridData[row.internalName] === false) {
+                return "No";
+            }
+            else {
+                return "";
+            }
+        }
+        else if (row.fieldType === "html") {
+            let tmp = document.createElement("DIV");
+            tmp.innerHTML = gridData[row.internalName];
+            return tmp.textContent || tmp.innerText || "";
+        }
+        else if (row.fieldType === "Text") {
+            return gridData[row.internalName];
+        } else {
+            return gridData[row.internalName];
+        }
+    } else {
+        return "";
+    }
+}
+  }
+      public formatDate=(date:any)=>{
+      let localDateObj = new Date(date);
+        let dateobj = new Date(localDateObj.getUTCFullYear(), localDateObj.getUTCMonth(), localDateObj.getUTCDate());
+        return dateobj.toLocaleDateString();
+    }
+
+  public _FieldTypeValueFilterAndSorting=(gridData:any, row:any)=>{
+    if(row.fieldType =="VersionHistory"){
+       return(
+      <div>
+        <button className="btn btn-secondary" onClick={async (e)=>{ e.preventDefault();this.setState({loader:true});this.GetVersionHistoryModal(gridData["ID"]); return false;}}>Show Version History</button>
+      </div>
+      )
+    }
+    else{
+    if (gridData[row.internalName] !== null && gridData[row.internalName] !== "") {
+        if (row.fieldType === "Lookup") {
+            return gridData[row.internalName]?.["Title"] || "";
+        } else if (row.fieldType === "Array") {
+            let data = "";
+            if (gridData[row.internalName] !== "" && gridData[row.internalName] !== null) {
+                gridData[row.internalName].forEach((ele:any) => {
+                    data += ", " + ele.Title
+                });
+                return data.substring(2);
+            } else {
+                return data
+            }
+        } else if (row.fieldType === "ChoiceArray") {
+          let data = "";
+          if (gridData[row.internalName] !== "" && gridData[row.internalName] !== null) {
+              gridData[row.internalName].forEach((ele:any) => {
+                  data += ", " + ele
+              });
+              return data.substring(2);
+          } else {
+              return data
+          }
+      }
+        
+        else if (row.fieldType === "Percent") {
+            return gridData[row.internalName] + "%";
+        }
+        else if (row.fieldType === "Date") {
+            //let dateObj = new Date(gridData[row.internalName])
+            return this.formatDate(gridData[row.internalName]);
+        }
+        else if (row.fieldType === "boolean") {
+            if (gridData[row.internalName] === true) {
+                return "Yes";
+            }
+            else if (gridData[row.internalName] === false) {
+                return "No";
+            }
+            else {
+                return "";
+            }
+        }
+        else if (row.fieldType === "html") {
+            let tmp = document.createElement("DIV");
+            tmp.innerHTML = gridData[row.internalName];
+            return tmp.textContent || tmp.innerText || "";
+        }else if(row.fieldType =="URL"){
+            return gridData[row.internalName];
+        }
+        else if (row.fieldType === "Text") {
+            return gridData[row.internalName];
+        } else {
+            return gridData[row.internalName];
+        }
+    } else {
+        return "";
+    }
+}
+  }
+
+  
+
+  render(){
+  return (
+    <div>
+      {this.state.dataSource.length>0?
+      <ResuableGridComponent dataSource={[...this.state.dataSource]} columnConstant={GridColumn} _fieldTypeFunc={this._FieldTypeValue} _fieldTypeFuncFilterAndSorting={this._FieldTypeValueFilterAndSorting} itemCount={9} /> 
+      :<EmptyGridComponent columnConstant={GridColumn} /> 
+        } 
+
+        {this.state.loader ? <div id="cover-spin"></div> : ""}
+
+          {this.state.showModal?<ModalComponent  HTMLVersionHistory={this.state.versionHistoryHTML} CancelBtn={this.ModalCancelbtn} />:""} 
+    </div>
+  );
+
+
+  }
+}
