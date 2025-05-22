@@ -1,18 +1,18 @@
 function main(workbook: ExcelScript.Workbook) {
   const sheet = workbook.getActiveWorksheet();
-  const data = sheet.getUsedRange().getValues();
+  const data: (string | number | boolean)[][] = sheet.getUsedRange().getValues();
 
-  // Define the sections we care about
-  const contactSections = [
+  // Define the sections to extract
+  const contactSections: string[] = [
     "Primary Contact",
     "Underwriting Contact",
     "Premium Collection Contact",
     "Claims Contact"
   ];
 
-  const results: any = {};
+  // Result object to store contact details by section
+  const results: Record<string, Contact[]> = {};
 
-  // Loop through each section label
   for (const section of contactSections) {
     const sectionData = extractSectionData(data, section);
     results[section] = sectionData;
@@ -22,13 +22,25 @@ function main(workbook: ExcelScript.Workbook) {
   return results;
 }
 
-// Utility to extract section block dynamically
-function extractSectionData(data: (string | number | boolean)[][], label: string) {
-  const sectionRows: any[] = [];
+// Contact type definition
+type Contact = {
+  name: string;
+  company: string;
+  email: string;
+  phone: string;
+};
+
+// Extract section data dynamically by label
+function extractSectionData(
+  data: (string | number | boolean)[][],
+  label: string
+): Contact[] {
+  const sectionRows: Contact[] = [];
   let startRow = -1;
 
   for (let i = 0; i < data.length; i++) {
-    if ((data[i][0] ?? '').toString().toLowerCase().includes(label.toLowerCase())) {
+    const cellValue = (data[i][0] ?? '').toString().toLowerCase();
+    if (cellValue.includes(label.toLowerCase())) {
       startRow = i + 1;
       break;
     }
@@ -38,34 +50,39 @@ function extractSectionData(data: (string | number | boolean)[][], label: string
 
   for (let i = startRow; i < data.length; i++) {
     const row = data[i];
-    
-    // Stop when the next label starts (e.g., next section like Underwriting Contact)
+
+    // Stop if we encounter a new contact label or an empty row
     const firstCell = (row[0] ?? '').toString().toLowerCase();
-    if (firstCell.includes("contact") && !firstCell.includes(label.toLowerCase())) {
+    if (
+      firstCell.includes("contact") &&
+      !firstCell.includes(label.toLowerCase())
+    ) {
+      break;
+    }
+    if (row.every(cell => cell === null || cell.toString().trim() === '')) {
       break;
     }
 
-    // Stop at empty row
-    if (row.every(cell => cell === null || cell.toString().trim() === '')) break;
-
-    // Extract potential contact chunks from the row
-    let contactChunks = splitRowIntoContacts(row);
+    const contactChunks = splitRowIntoContacts(row);
     sectionRows.push(...contactChunks);
   }
 
   return sectionRows;
 }
 
-// Split a row into multiple contact chunks based on structure
-function splitRowIntoContacts(row: (string | number | boolean)[]): any[] {
-  const chunkSize = 4; // Assume contact details are grouped in 4 columns
-  const contacts: any[] = [];
+// Helper to extract multiple contacts from a single row
+function splitRowIntoContacts(row: (string | number | boolean)[]): Contact[] {
+  const chunkSize = 5; // Assume contact info is in sets of 5 columns
+  const contacts: Contact[] = [];
 
   for (let i = 0; i < row.length; i += chunkSize) {
     const name = (row[i] ?? '').toString().trim();
     const company = (row[i + 1] ?? '').toString().trim();
-    const emailParts = [row[i + 2], row[i + 3]].map(cell => (cell ?? '').toString().trim());
-    const email = emailParts.filter(e => e.includes('@') || e.includes('.')).join('');
+    const emailParts = [
+      row[i + 2] ?? '',
+      row[i + 3] ?? ''
+    ].map(cell => cell.toString().trim());
+    const email = emailParts.filter(p => p.includes('@') || p.includes('.')).join('');
     const phone = (row[i + 4] ?? '').toString().trim();
 
     if (name || company || email || phone) {
