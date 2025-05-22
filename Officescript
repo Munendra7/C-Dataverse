@@ -1,0 +1,47 @@
+function main(workbook: ExcelScript.Workbook) {
+  const sheet = workbook.getActiveWorksheet();
+  const data = sheet.getUsedRange().getValues();
+
+  let startRow = -1;
+  const contacts: { name: string, code: string, email: string, phone: string }[] = [];
+
+  // Locate "Primary Contact:" row
+  for (let i = 0; i < data.length; i++) {
+    const cellValue = (data[i][0] ?? '').toString().toLowerCase();
+    if (cellValue.includes("primary contact")) {
+      startRow = i + 1;
+      break;
+    }
+  }
+
+  if (startRow === -1) {
+    console.log("Primary Contact section not found.");
+    return;
+  }
+
+  // Process contact rows until a fully empty row is found
+  for (let i = startRow; i < data.length; i++) {
+    const row = data[i];
+
+    // Stop on completely empty row
+    if (row.every(cell => cell === null || cell.toString().trim() === '')) break;
+
+    const name = (row[0] ?? '').toString().trim();
+    const code = (row[1] ?? '').toString().trim();
+
+    // Combine any text that looks like an email across multiple cells
+    const email = [row[2], row[3], row[4]]
+      .map(cell => (cell ?? '').toString().trim())
+      .filter(s => s.includes('@') || s.includes('.com'))
+      .join('');
+
+    const phone = (row[5] ?? '').toString().trim();
+
+    if (name || code || email || phone) {
+      contacts.push({ name, code, email, phone });
+    }
+  }
+
+  console.log(contacts);
+  return contacts;
+}
