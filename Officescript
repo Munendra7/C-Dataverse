@@ -1,11 +1,12 @@
 function main(workbook: ExcelScript.Workbook) {
   const sheet = workbook.getActiveWorksheet();
-  const data: (string | number | boolean)[][] = sheet.getUsedRange().getValues();
-
+  const data = sheet.getUsedRange().getValues();
+  
+  // Output structure
   const result: Record<string, string | Contact[]> = {};
 
-  // === Metadata fields to extract ===
-  const metadataFields: string[] = [
+  // === Metadata extraction ===
+  const metadataLabels: string[] = [
     "Country",
     "Insurer",
     "Local Insurer Abbreviated Name",
@@ -19,28 +20,26 @@ function main(workbook: ExcelScript.Workbook) {
     "Local Reinsurer Commission Percent",
     "Local Reinsurer Retention Percent"
   ];
-
-  for (const label of metadataFields) {
-    result[label] = extractSingleValue(data, label);
+  for (const label of metadataLabels) {
+    result[label] = findMetadataValue(data, label);
   }
 
-  // === Contact blocks to extract ===
-  const contactSections: string[] = [
+  // === Contact section extraction ===
+  const contactSections = [
     "Primary Contact",
     "Underwriting Contact",
     "Premium Collection Contact",
     "Claims Contact"
   ];
-
   for (const section of contactSections) {
-    result[section] = extractContactRows(data, section);
+    result[section] = extractContactSection(data, section);
   }
 
   console.log(result);
   return result;
 }
 
-// === Contact data type ===
+// === Contact structure ===
 type Contact = {
   name: string;
   company: string;
@@ -48,15 +47,16 @@ type Contact = {
   phone: string;
 };
 
-// === Extract a single cell value from a label ===
-function extractSingleValue(data: (string | number | boolean)[][], label: string): string {
+// === Find a single metadata value by label ===
+function findMetadataValue(data: (string | number | boolean)[][], label: string): string {
   for (let i = 0; i < data.length; i++) {
-    const cellValue = (data[i][0] ?? '').toString().toLowerCase();
-    if (cellValue.includes(label.toLowerCase())) {
-      for (let j = 1; j < data[i].length; j++) {
-        const value = data[i][j];
-        if (value !== null && value.toString().trim() !== '') {
-          return value.toString().trim();
+    const row = data[i];
+    const cell = (row[0] ?? '').toString().toLowerCase();
+    if (cell.includes(label.toLowerCase())) {
+      for (let j = 1; j < row.length; j++) {
+        const val = row[j];
+        if (val !== null && val.toString().trim() !== '') {
+          return val.toString().trim();
         }
       }
     }
@@ -64,52 +64,58 @@ function extractSingleValue(data: (string | number | boolean)[][], label: string
   return '';
 }
 
-// === Extract contact block (multiple rows) dynamically ===
-function extractContactRows(data: (string | number | boolean)[][], sectionLabel: string): Contact[] {
+// === Extract contact section by label, supporting multiple rows ===
+function extractContactSection(data: (string | number | boolean)[][], label: string): Contact[] {
   const contacts: Contact[] = [];
   let startRow = -1;
 
-  // Step 1: Find the section label
+  // Step 1: Locate label
   for (let i = 0; i < data.length; i++) {
     const cell = (data[i][0] ?? '').toString().toLowerCase();
-    if (cell.includes(sectionLabel.toLowerCase())) {
+    if (cell.includes(label.toLowerCase())) {
       startRow = i + 1;
       break;
     }
   }
-
   if (startRow === -1) return [];
 
-  // Step 2: Parse rows until an empty row or new section
+  // Step 2: Traverse rows after label until next section or blank
   for (let i = startRow; i < data.length; i++) {
     const row = data[i];
-    const firstCell = (row[0] ?? '').toString().trim().toLowerCase();
+    const firstCell = (row[0] ?? '').toString().toLowerCase();
 
-    // Stop if row is empty or starts a new section
+    // Stop if it's a new section or empty
     if (
-      firstCell.includes('contact') &&
-      !firstCell.includes(sectionLabel.toLowerCase())
+      firstCell.includes("contact") &&
+      !firstCell.includes(label.toLowerCase())
     ) break;
     if (row.every(cell => cell === null || cell.toString().trim() === '')) break;
 
-    // Dynamically extract data from row
+    // Step 3: Extract contact fields dynamically
     const name = (row[0] ?? '').toString().trim();
     const company = (row[1] ?? '').toString().trim();
 
-    const emailParts: string[] = [];
-    if (row[2]) emailParts.push(row[2].toString().trim());
-    if (row[3]) emailParts.push(row[3].toString().trim());
-    const email = emailParts.join('').includes('@') ? emailParts.join('') : '';
-
-    let phone = '';
-    for (let j = 4; j < row.length; j++) {
-      const cellVal = row[j]?.toString().trim();
-      if (cellVal && (cellVal.startsWith('+') || cellVal.match(/^\d+$/))) {
-        phone = cellVal;
+    // Email: Look through columns 2–6
+    let email = '';
+    for (let j = 2; j < row.length; j++) {
+      const val = row[j]?.toString().trim();
+      if (val && val.includes('@')) {
+        email = val;
         break;
       }
     }
 
+    // Phone: Look through remaining columns
+    let phone = '';
+    for (let j = 3; j < row.length; j++) {
+      const val = row[j]?.toString().trim();
+      if (val && (val.startsWith('+') || val.match(/^\d{5,}$/))) {
+        phone = val;
+        break;
+      }
+    }
+
+    // Only include if at least one field is non-empty
     if (name || company || email || phone) {
       contacts.push({ name, company, email, phone });
     }
