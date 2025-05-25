@@ -1,3 +1,4 @@
+// Office Script to extract and process multi-contact fields and place them in a final sheet
 function main(workbook: ExcelScript.Workbook) {
   const generalSheet = workbook.getWorksheet("General Info");
   const financialSheet = workbook.getWorksheet("Financial");
@@ -27,43 +28,72 @@ function main(workbook: ExcelScript.Workbook) {
     { ExcelLabel: "Is a Local Reinsurer used? (If No, disregard the below questions)", FinalSheetDataHeader: "Local Reinsurer?" },
     { ExcelLabel: "Local Insurer Abbreviated Name:", FinalSheetDataHeader: "Partner Abbreviated Name" },
     { ExcelLabel: "Address:", FinalSheetDataHeader: "Partner Address" },
-    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Email", propertyName: "email" },
     { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Name", propertyName: "name" },
-    { ExcelLabel: "Insurer:", FinalSheetDataHeader: "Partner Name" },
-    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Email", propertyName: "email" },
+    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Title", propertyName: "title" },
+    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Email", propertyName: "email" },
+    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Phone", propertyName: "phone" },
     { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Name", propertyName: "name" },
+    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Title", propertyName: "title" },
+    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Email", propertyName: "email" },
     { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Phone", propertyName: "phone" },
-    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Title", propertyName: "title" }
+    { ExcelLabel: "Insurer:", FinalSheetDataHeader: "Partner Name" }
   ];
 
-  const allHeaders = [...new Set([...generalHeadersMap, ...financialHeadersMap, ...productCapabilitiesHeadersMap].map(obj => obj.FinalSheetDataHeader))];
-  const lastColumnLetter = String.fromCharCode(64 + allHeaders.length);
+  const financialHeadersMap = [
+    { ExcelLabel: "Payment conditions:", FinalSheetDataHeader: "Cash Before Cover?" },
+    { ExcelLabel: "Permitted Collection Type(s)", FinalSheetDataHeader: "Collection Types - Permitted" },
+    { ExcelLabel: "Preferred Collection Type", FinalSheetDataHeader: "Preferred Collection Types" },
+    { ExcelLabel: "Currencies Available", FinalSheetDataHeader: "Available Policy Currency" },
+    { ExcelLabel: "Currencies Available", FinalSheetDataHeader: "Standard Policy Currency" },
+    { ExcelLabel: "Local Insurer Retention Percent (minimum required)", FinalSheetDataHeader: "Insurer Retention Percentage" },
+    { ExcelLabel: "Payment Notes (add any payment or collection information that is unique to your company or country):", FinalSheetDataHeader: "Payment Notes" },
+    { ExcelLabel: "Payment Period:", FinalSheetDataHeader: "Payment Period" },
+    { ExcelLabel: "Payment conditions:", FinalSheetDataHeader: "Payment Type" },
+    { ExcelLabel: "Reinsurance Commission Currency", FinalSheetDataHeader: "Reinsurance (Ceding) Comm - Currency" },
+    { ExcelLabel: "New Policy", FinalSheetDataHeader: "Reinsurance (Ceding) Comm - Minimum" },
+    { ExcelLabel: "New Policy", FinalSheetDataHeader: "Reinsurance (Ceding) Comm Pct" },
+    { ExcelLabel: "Renewal Policy", FinalSheetDataHeader: "Reinsurance Renewal (Ceding) Comm Pct" }
+  ];
 
+  const productCapabilitiesHeadersMap = [
+    { ExcelLabel: "Can you issue manuscript wording?", FinalSheetDataHeader: "Manuscripting allowed?" },
+    { ExcelLabel: "Requirements Notes", FinalSheetDataHeader: "Partner Notes" },
+    { ExcelLabel: "What, if any, conditions are there when backdating?", FinalSheetDataHeader: "Policy - Backdating Conditions" },
+    { ExcelLabel: `Regulatory filing required if using BHSI/manuscript wording?\nIf a filing is required, what documents do you need?\nHow long does the filing take?`, FinalSheetDataHeader: "Policy - Filing Requirements?" },
+    { ExcelLabel: `Policy Language?\nIf not English, is an English translation available?`, FinalSheetDataHeader: "Policy - Language" },
+    { ExcelLabel: "Minimum Policy Period", FinalSheetDataHeader: "Policy Term - < 1 year allowed?" },
+    { ExcelLabel: "Maximum Policy Period", FinalSheetDataHeader: "Policy Term - Maximum" },
+    { ExcelLabel: "Policy Wording used?", FinalSheetDataHeader: "Policy Wording - Good Local Standard Available?" },
+    { ExcelLabel: "Local Policy Wording Notes", FinalSheetDataHeader: "Policy Wording Notes" },
+    { ExcelLabel: "Requirements (Subjectivities)*", FinalSheetDataHeader: "Subjectivities" },
+    { ExcelLabel: "Tie-In of Limits Allowed?", FinalSheetDataHeader: "Tie-in of Limits Permitted?" }
+  ];
+
+  const allHeaders = [...generalHeadersMap, ...financialHeadersMap, ...productCapabilitiesHeadersMap].map(h => h.FinalSheetDataHeader);
+
+  const lastColumnLetter = String.fromCharCode(64 + allHeaders.length);
   finalSheet.getRange(`A1:${lastColumnLetter}1`).setValues([allHeaders]);
 
   const generalData = generalSheet.getUsedRange()?.getValues() || [];
   const financialData = financialSheet.getUsedRange()?.getValues() || [];
   const productCapabilitiesData = productCapabilities.getUsedRange()?.getValues() || [];
 
-  // Extract general sheet data with contact parsing support
-  const generalExtractedData = generalHeadersMap.map(obj => {
-    if (obj.propertyName && (obj.ExcelLabel.includes("Primary Contact") || obj.ExcelLabel.includes("Claims Contact"))) {
-      return extractContactProperty(generalData, obj.ExcelLabel, obj.propertyName);
-    } else {
-      return findMetadataValue(generalData, obj.ExcelLabel.trim());
+  const generalExtracted = generalHeadersMap.map(h => {
+    if (h.propertyName) {
+      return extractContactProperty(generalData, h.ExcelLabel, h.propertyName);
     }
+    return findMetadataValue(generalData, h.ExcelLabel);
   });
 
-  const financialExtractedData = financialHeadersMap.map(obj => findMetadataValue(financialData, obj.ExcelLabel.trim(), true));
-  const productCapabilitiesExtractedData = productCapabilitiesHeadersMap.map(obj => findMetadataValue(productCapabilitiesData, obj.ExcelLabel.trim()));
+  const financialExtracted = financialHeadersMap.map(h => findMetadataValue(financialData, h.ExcelLabel));
+  const productExtracted = productCapabilitiesHeadersMap.map(h => findMetadataValue(productCapabilitiesData, h.ExcelLabel));
 
-  const rowData = [...generalExtractedData, ...financialExtractedData, ...productCapabilitiesExtractedData];
+  const rowData = [...generalExtracted, ...financialExtracted, ...productExtracted];
   finalSheet.getRange(`A2:${lastColumnLetter}2`).setValues([rowData]);
 
   console.log("Final Data sheet updated dynamically!");
 }
 
-// Generic metadata finder
 function findMetadataValue(data: (string | number | boolean)[][], label: string): string {
   const normalizedLabel = label.toLowerCase().replace(/\s+/g, " ").trim();
   for (const row of data) {
@@ -80,24 +110,37 @@ function findMetadataValue(data: (string | number | boolean)[][], label: string)
   return '';
 }
 
-// Contact parser for "Primary Contact:" or "Claims Contact:"
-function extractContactProperty(data: (string | number | boolean)[][], label: string, property: string): string {
-  let contacts: string[] = [];
+function extractContactProperty(
+  data: (string | number | boolean)[][],
+  label: string,
+  property: "name" | "title" | "email" | "phone"
+): string {
+  const results: string[] = [];
 
   for (const row of data) {
     const cellLabel = (row[0] ?? '').toString().toLowerCase().trim();
     if (cellLabel.includes(label.toLowerCase())) {
       const cellValue = row.slice(1).join(" ").trim();
-      const lines = cellValue.split(/\n|;/).map(line => line.trim()).filter(Boolean);
+      const lines = cellValue.split(/\n|;/).map(l => l.trim()).filter(Boolean);
+
       for (const line of lines) {
-        const [name, title, email, phone] = line.split(/\s{2,}|\t| {2,}/); // assuming fields are space/tab separated
-        const contact = { name, title, email, phone };
+        const parts: string[] = line.split(/\s{2,}|\t| {2,}/).map(p => p.trim()).filter(Boolean);
+        const contact: { name?: string; title?: string; email?: string; phone?: string } = {};
+
+        if (parts.length >= 4) {
+          [contact.name, contact.title, contact.email, contact.phone] = parts;
+        } else if (parts.length === 3) {
+          [contact.name, contact.title, contact.email] = parts;
+        } else if (parts.length === 2) {
+          [contact.name, contact.email] = parts;
+        }
+
         if (contact[property]) {
-          contacts.push(contact[property]);
+          results.push(contact[property]!);
         }
       }
     }
   }
 
-  return contacts.join(", ");
+  return results.join(", ");
 }
