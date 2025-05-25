@@ -1,8 +1,9 @@
 function main(workbook: ExcelScript.Workbook) {
-  const sheets = {
+  // Define worksheet references
+  const sheets: { [key: string]: ExcelScript.Worksheet | undefined } = {
     general: workbook.getWorksheet("General Info"),
     financial: workbook.getWorksheet("Financial"),
-    product: workbook.getWorksheet("Product Capabilities")
+    product: workbook.getWorksheet("Product Capabilities"),
   };
 
   if (!sheets.general || !sheets.financial || !sheets.product) {
@@ -10,6 +11,7 @@ function main(workbook: ExcelScript.Workbook) {
     return;
   }
 
+  // Prepare final sheet
   let finalSheet = workbook.getWorksheet("Final Data");
   if (!finalSheet) {
     finalSheet = workbook.addWorksheet("Final Data");
@@ -17,7 +19,15 @@ function main(workbook: ExcelScript.Workbook) {
     finalSheet.getUsedRange()?.clear();
   }
 
-  const generalHeadersMap = [
+  // Define the mapping type
+  type Mapping = {
+    ExcelLabel: string;
+    FinalSheetDataHeader: string;
+    property?: "name" | "title" | "email" | "phone";
+  };
+
+  // Mapping arrays with explicit types
+  const generalHeadersMap: Mapping[] = [
     { ExcelLabel: "Local Broker Required?", FinalSheetDataHeader: "Broker Requirement" },
     { ExcelLabel: "Insurer:", FinalSheetDataHeader: "Local Insurer Name" },
     { ExcelLabel: "Country", FinalSheetDataHeader: "Local Reinsurer Country" },
@@ -29,19 +39,19 @@ function main(workbook: ExcelScript.Workbook) {
     { ExcelLabel: "Local Insurer Abbreviated Name:", FinalSheetDataHeader: "Partner Abbreviated Name" },
     { ExcelLabel: "Address:", FinalSheetDataHeader: "Partner Address" },
 
-    // Contact Fields - each in separate columns
+    // Contact Fields with property defined
     { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Name", property: "name" },
     { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Title", property: "title" },
     { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Email", property: "email" },
     { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Phone", property: "phone" },
-    
+
     { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Name", property: "name" },
     { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Title", property: "title" },
     { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Email", property: "email" },
-    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Phone", property: "phone" }
+    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Phone", property: "phone" },
   ];
 
-  const financialHeadersMap = [
+  const financialHeadersMap: Mapping[] = [
     { ExcelLabel: "Payment conditions:", FinalSheetDataHeader: "Cash Before Cover?" },
     { ExcelLabel: "Permitted Collection Type(s)", FinalSheetDataHeader: "Collection Types - Permitted" },
     { ExcelLabel: "Preferred Collection Type", FinalSheetDataHeader: "Preferred Collection Types" },
@@ -50,10 +60,10 @@ function main(workbook: ExcelScript.Workbook) {
     { ExcelLabel: "Local Insurer Retention Percent (minimum required)", FinalSheetDataHeader: "Insurer Retention Percentage" },
     { ExcelLabel: "Payment Notes (add any payment or collection information that is unique to your company or country):", FinalSheetDataHeader: "Payment Notes" },
     { ExcelLabel: "Payment Period:", FinalSheetDataHeader: "Payment Period" },
-    { ExcelLabel: "Payment conditions:", FinalSheetDataHeader: "Payment Type" }
+    { ExcelLabel: "Payment conditions:", FinalSheetDataHeader: "Payment Type" },
   ];
 
-  const productCapabilitiesHeadersMap = [
+  const productCapabilitiesHeadersMap: Mapping[] = [
     { ExcelLabel: "Can you issue manuscript wording?", FinalSheetDataHeader: "Manuscripting allowed?" },
     { ExcelLabel: "Requirements Notes", FinalSheetDataHeader: "Partner Notes" },
     { ExcelLabel: "What, if any, conditions are there when backdating?", FinalSheetDataHeader: "Policy - Backdating Conditions" },
@@ -63,71 +73,99 @@ function main(workbook: ExcelScript.Workbook) {
     { ExcelLabel: "Policy Wording used?", FinalSheetDataHeader: "Policy Wording - Good Local Standard Available?" },
     { ExcelLabel: "Local Policy Wording Notes", FinalSheetDataHeader: "Policy Wording Notes" },
     { ExcelLabel: "Requirements (Subjectivities)*", FinalSheetDataHeader: "Subjectivities" },
-    { ExcelLabel: "Tie-In of Limits Allowed?", FinalSheetDataHeader: "Tie-in of Limits Permitted?" }
+    { ExcelLabel: "Tie-In of Limits Allowed?", FinalSheetDataHeader: "Tie-in of Limits Permitted?" },
   ];
 
-  const allMappings = [...generalHeadersMap, ...financialHeadersMap, ...productCapabilitiesHeadersMap];
+  const allMappings: Mapping[] = [
+    ...generalHeadersMap,
+    ...financialHeadersMap,
+    ...productCapabilitiesHeadersMap,
+  ];
+
+  // Extract all headers for the final sheet
   const allHeaders = allMappings.map(m => m.FinalSheetDataHeader);
 
-  // Set headers
+  // Set headers in the final sheet (first row)
   finalSheet.getRangeByIndexes(0, 0, 1, allHeaders.length).setValues([allHeaders]);
 
-  // Pull raw data
-  const sheetData = {
+  // Read all sheet data once, typed as array of rows (each row is array of cells)
+  const sheetData: { [key: string]: (string | number | boolean)[][] } = {
     general: sheets.general.getUsedRange()?.getValues() ?? [],
     financial: sheets.financial.getUsedRange()?.getValues() ?? [],
-    product: sheets.product.getUsedRange()?.getValues() ?? []
+    product: sheets.product.getUsedRange()?.getValues() ?? [],
   };
 
+  // For each mapping, find corresponding value from sheets
   const rowData: string[] = allMappings.map(mapping => {
-    const source = mapping.ExcelLabel;
+    const sourceLabel = mapping.ExcelLabel;
     const prop = mapping.property;
+
+    // Determine which sheet data contains the source label in first column
     let data: (string | number | boolean)[][] = [];
 
-    if (sheetData.general.some(row => (row[0] ?? '').toString().includes(source))) {
+    if (sheetData.general.some(row => (row[0]?.toString() ?? "").includes(sourceLabel))) {
       data = sheetData.general;
-    } else if (sheetData.financial.some(row => (row[0] ?? '').toString().includes(source))) {
+    } else if (sheetData.financial.some(row => (row[0]?.toString() ?? "").includes(sourceLabel))) {
       data = sheetData.financial;
-    } else if (sheetData.product.some(row => (row[0] ?? '').toString().includes(source))) {
+    } else if (sheetData.product.some(row => (row[0]?.toString() ?? "").includes(sourceLabel))) {
       data = sheetData.product;
     }
 
+    // If property exists, extract contact info property, else extract single cell value
     if (prop) {
-      return extractContactProperty(data, source, prop);
+      return extractContactProperty(data, sourceLabel, prop);
     } else {
-      return findSingleCellValue(data, source);
+      return findSingleCellValue(data, sourceLabel);
     }
   });
 
+  // Write the extracted row data to second row in final sheet
   finalSheet.getRangeByIndexes(1, 0, 1, rowData.length).setValues([rowData]);
+
   console.log("Final Data sheet populated successfully.");
 }
 
-// Extracts a simple label:value mapping
+/**
+ * Finds a single cell value from a label in first column.
+ * @param data Sheet data rows
+ * @param label Label to find in first column
+ * @returns value in second column or empty string if not found
+ */
 function findSingleCellValue(data: (string | number | boolean)[][], label: string): string {
-  const normalized = label.toLowerCase().trim();
+  const normalizedLabel = label.toLowerCase().trim();
   for (const row of data) {
-    const cellLabel = (row[0] ?? '').toString().toLowerCase().trim();
-    if (cellLabel.includes(normalized)) {
+    const cellLabel = (row[0]?.toString() ?? "").toLowerCase().trim();
+    if (cellLabel.includes(normalizedLabel)) {
       return row[1]?.toString().trim() ?? "";
     }
   }
   return "";
 }
 
-// Extracts contact property from multiline tabular fields
-function extractContactProperty(data: (string | number | boolean)[][], label: string, property: string): string {
+/**
+ * Extracts a contact property from a contact row with multiple columns after the label.
+ * @param data Sheet data rows
+ * @param label Label to find in first column
+ * @param property Contact property ("name", "title", "email", "phone")
+ * @returns extracted property string or empty string if not found
+ */
+function extractContactProperty(
+  data: (string | number | boolean)[][],
+  label: string,
+  property: "name" | "title" | "email" | "phone"
+): string {
+  // Map property to index in row after the label cell
   const propertyIndexMap: { [key: string]: number } = {
     name: 0,
     title: 1,
     email: 2,
-    phone: 3
+    phone: 3,
   };
 
   for (const row of data) {
-    const cell = (row[0] ?? '').toString().toLowerCase();
-    if (cell.includes(label.toLowerCase())) {
-      const parts = row.slice(1).map(val => val?.toString().trim() ?? "");
+    const firstCell = (row[0]?.toString() ?? "").toLowerCase();
+    if (firstCell.includes(label.toLowerCase())) {
+      const parts = row.slice(1).map(cell => (cell?.toString() ?? "").trim());
       return parts[propertyIndexMap[property]] ?? "";
     }
   }
