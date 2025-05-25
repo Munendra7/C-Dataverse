@@ -1,4 +1,6 @@
-// Office Script to extract and process multi-contact fields and place them in a final sheet
+// Office Script to dynamically extract and map data from multiple sheets
+// including handling of multiple contacts for Primary and Claims Contacts
+
 function main(workbook: ExcelScript.Workbook) {
   const generalSheet = workbook.getWorksheet("General Info");
   const financialSheet = workbook.getWorksheet("Financial");
@@ -16,7 +18,7 @@ function main(workbook: ExcelScript.Workbook) {
     finalSheet.getUsedRange()?.clear();
   }
 
-  const generalHeadersMap = [
+  const generalHeadersMap: { ExcelLabel: string; FinalSheetDataHeader: string; propertyName?: string }[] = [
     { ExcelLabel: "Local Broker Required?", FinalSheetDataHeader: "Broker Requirement" },
     { ExcelLabel: "Insurer:", FinalSheetDataHeader: "Local Insurer Name" },
     { ExcelLabel: "Local Reinsurer Address", FinalSheetDataHeader: "Local Reinsurer Address" },
@@ -29,14 +31,12 @@ function main(workbook: ExcelScript.Workbook) {
     { ExcelLabel: "Local Insurer Abbreviated Name:", FinalSheetDataHeader: "Partner Abbreviated Name" },
     { ExcelLabel: "Address:", FinalSheetDataHeader: "Partner Address" },
     { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Name", propertyName: "name" },
-    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Title", propertyName: "title" },
     { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Email", propertyName: "email" },
-    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Phone", propertyName: "phone" },
+    { ExcelLabel: "Insurer:", FinalSheetDataHeader: "Partner Name" },
     { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Name", propertyName: "name" },
     { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Title", propertyName: "title" },
     { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Email", propertyName: "email" },
-    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Phone", propertyName: "phone" },
-    { ExcelLabel: "Insurer:", FinalSheetDataHeader: "Partner Name" }
+    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Phone", propertyName: "phone" }
   ];
 
   const financialHeadersMap = [
@@ -59,8 +59,8 @@ function main(workbook: ExcelScript.Workbook) {
     { ExcelLabel: "Can you issue manuscript wording?", FinalSheetDataHeader: "Manuscripting allowed?" },
     { ExcelLabel: "Requirements Notes", FinalSheetDataHeader: "Partner Notes" },
     { ExcelLabel: "What, if any, conditions are there when backdating?", FinalSheetDataHeader: "Policy - Backdating Conditions" },
-    { ExcelLabel: `Regulatory filing required if using BHSI/manuscript wording?\nIf a filing is required, what documents do you need?\nHow long does the filing take?`, FinalSheetDataHeader: "Policy - Filing Requirements?" },
-    { ExcelLabel: `Policy Language?\nIf not English, is an English translation available?`, FinalSheetDataHeader: "Policy - Language" },
+    { ExcelLabel: "Regulatory filing required if using BHSI/manuscript wording? If a filing is required, what documents do you need? How long does the filing take?", FinalSheetDataHeader: "Policy - Filing Requirements?" },
+    { ExcelLabel: "Policy Language? If not English, is an English translation available?", FinalSheetDataHeader: "Policy - Language" },
     { ExcelLabel: "Minimum Policy Period", FinalSheetDataHeader: "Policy Term - < 1 year allowed?" },
     { ExcelLabel: "Maximum Policy Period", FinalSheetDataHeader: "Policy Term - Maximum" },
     { ExcelLabel: "Policy Wording used?", FinalSheetDataHeader: "Policy Wording - Good Local Standard Available?" },
@@ -69,8 +69,7 @@ function main(workbook: ExcelScript.Workbook) {
     { ExcelLabel: "Tie-In of Limits Allowed?", FinalSheetDataHeader: "Tie-in of Limits Permitted?" }
   ];
 
-  const allHeaders = [...generalHeadersMap, ...financialHeadersMap, ...productCapabilitiesHeadersMap].map(h => h.FinalSheetDataHeader);
-
+  const allHeaders = [...generalHeadersMap.map(h => h.FinalSheetDataHeader), ...financialHeadersMap.map(h => h.FinalSheetDataHeader), ...productCapabilitiesHeadersMap.map(h => h.FinalSheetDataHeader)];
   const lastColumnLetter = String.fromCharCode(64 + allHeaders.length);
   finalSheet.getRange(`A1:${lastColumnLetter}1`).setValues([allHeaders]);
 
@@ -78,19 +77,19 @@ function main(workbook: ExcelScript.Workbook) {
   const financialData = financialSheet.getUsedRange()?.getValues() || [];
   const productCapabilitiesData = productCapabilities.getUsedRange()?.getValues() || [];
 
-  const generalExtracted = generalHeadersMap.map(h => {
-    if (h.propertyName) {
-      return extractContactProperty(generalData, h.ExcelLabel, h.propertyName);
+  const generalExtractedData = generalHeadersMap.map((obj) => {
+    if (obj.propertyName) {
+      return extractContactProperty(generalData, obj.ExcelLabel, obj.propertyName);
+    } else {
+      return findMetadataValue(generalData, obj.ExcelLabel);
     }
-    return findMetadataValue(generalData, h.ExcelLabel);
   });
 
-  const financialExtracted = financialHeadersMap.map(h => findMetadataValue(financialData, h.ExcelLabel));
-  const productExtracted = productCapabilitiesHeadersMap.map(h => findMetadataValue(productCapabilitiesData, h.ExcelLabel));
+  const financialExtractedData = financialHeadersMap.map(h => findMetadataValue(financialData, h.ExcelLabel));
+  const productCapabilitiesExtractedData = productCapabilitiesHeadersMap.map(h => findMetadataValue(productCapabilitiesData, h.ExcelLabel));
 
-  const rowData = [...generalExtracted, ...financialExtracted, ...productExtracted];
-  finalSheet.getRange(`A2:${lastColumnLetter}2`).setValues([rowData]);
-
+  const fullRow = [...generalExtractedData, ...financialExtractedData, ...productCapabilitiesExtractedData];
+  finalSheet.getRange(`A2:${lastColumnLetter}2`).setValues([fullRow]);
   console.log("Final Data sheet updated dynamically!");
 }
 
@@ -110,37 +109,28 @@ function findMetadataValue(data: (string | number | boolean)[][], label: string)
   return '';
 }
 
-function extractContactProperty(
-  data: (string | number | boolean)[][],
-  label: string,
-  property: "name" | "title" | "email" | "phone"
-): string {
-  const results: string[] = [];
+function extractContactProperty(data: (string | number | boolean)[][], label: string, property: string): string {
+  const contacts: string[] = [];
+  const propertyIndexMap: { [key: string]: number } = {
+    name: 0,
+    title: 1,
+    email: 2,
+    phone: 3
+  };
 
+  const propIndex: number = propertyIndexMap[property];
   for (const row of data) {
-    const cellLabel = (row[0] ?? '').toString().toLowerCase().trim();
-    if (cellLabel.includes(label.toLowerCase())) {
-      const cellValue = row.slice(1).join(" ").trim();
-      const lines = cellValue.split(/\n|;/).map(l => l.trim()).filter(Boolean);
-
-      for (const line of lines) {
-        const parts: string[] = line.split(/\s{2,}|\t| {2,}/).map(p => p.trim()).filter(Boolean);
-        const contact: { name?: string; title?: string; email?: string; phone?: string } = {};
-
-        if (parts.length >= 4) {
-          [contact.name, contact.title, contact.email, contact.phone] = parts;
-        } else if (parts.length === 3) {
-          [contact.name, contact.title, contact.email] = parts;
-        } else if (parts.length === 2) {
-          [contact.name, contact.email] = parts;
-        }
-
-        if (contact[property]) {
-          results.push(contact[property]!);
+    const cell = (row[0] ?? '').toString().toLowerCase().trim();
+    if (cell.includes(label.toLowerCase())) {
+      const contactLine = row.slice(1).join(' ').trim();
+      const contactParts = contactLine.split(/\n|\r/).map(s => s.trim()).filter(s => s);
+      for (const line of contactParts) {
+        const tokens = line.split(/\s+/);
+        if (tokens.length >= 4) {
+          contacts.push(tokens[propIndex]);
         }
       }
     }
   }
-
-  return results.join(", ");
+  return contacts.length ? contacts.join(', ') : '';
 }
