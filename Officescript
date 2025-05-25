@@ -1,91 +1,3 @@
-function main(workbook: ExcelScript.Workbook) {
-  const generalSheet = workbook.getWorksheet("General Info");
-  const financialSheet = workbook.getWorksheet("Financial");
-  const productCapabilities = workbook.getWorksheet("Product Capabilities");
-
-  if (!generalSheet || !financialSheet || !productCapabilities) {
-    console.log("One or more required sheets are missing!");
-    return;
-  }
-
-  let finalSheet = workbook.getWorksheet("Final Data");
-  if (!finalSheet) {
-    finalSheet = workbook.addWorksheet("Final Data");
-  } else {
-    finalSheet.getUsedRange()?.clear();
-  }
-
-  const generalHeadersMap: { ExcelLabel: string; FinalSheetDataHeader: string; propertyName?: string }[] = [
-    { ExcelLabel: "Local Broker Required?", FinalSheetDataHeader: "Broker Requirement" },
-    { ExcelLabel: "Insurer:", FinalSheetDataHeader: "Local Insurer Name" },
-    { ExcelLabel: "Local Reinsurer Address", FinalSheetDataHeader: "Local Reinsurer Address" },
-    { ExcelLabel: "Local Reinsurer Commission Percent", FinalSheetDataHeader: "Local Reinsurer Commission" },
-    { ExcelLabel: "Country", FinalSheetDataHeader: "Local Reinsurer Country" },
-    { ExcelLabel: "Local Reinsurer Name", FinalSheetDataHeader: "Local Reinsurer Name" },
-    { ExcelLabel: "Local Reinsurer Notes", FinalSheetDataHeader: "Local Reinsurer Notes" },
-    { ExcelLabel: "Local Reinsurer Retention Percent", FinalSheetDataHeader: "Local Reinsurer Retention %" },
-    { ExcelLabel: "Is a Local Reinsurer used? (If No, disregard the below questions)", FinalSheetDataHeader: "Local Reinsurer?" },
-    { ExcelLabel: "Local Insurer Abbreviated Name:", FinalSheetDataHeader: "Partner Abbreviated Name" },
-    { ExcelLabel: "Address:", FinalSheetDataHeader: "Partner Address" },
-    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Email", propertyName: "email" },
-    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Name", propertyName: "name" },
-    { ExcelLabel: "Insurer:", FinalSheetDataHeader: "Partner Name" },
-    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Email", propertyName: "email" },
-    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Name", propertyName: "name" },
-    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Phone", propertyName: "phone" },
-    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Title", propertyName: "title" }
-  ];
-
-  const financialHeadersMap = [...]; // unchanged
-  const productCapabilitiesHeadersMap = [...]; // unchanged
-
-  const allHeaders = [...generalHeadersMap.map(obj => obj.FinalSheetDataHeader), ...financialHeadersMap.map(obj => obj.FinalSheetDataHeader), ...productCapabilitiesHeadersMap.map(obj => obj.FinalSheetDataHeader)];
-  const lastColumn = allHeaders.length;
-  const lastColumnLetter = lastColumn > 26
-    ? `A${String.fromCharCode(65 + (lastColumn - 27))}`
-    : String.fromCharCode(65 + (lastColumn - 1));
-  finalSheet.getRange(`A1:${lastColumnLetter}1`).setValues([allHeaders]);
-
-  const generalData = generalSheet.getUsedRange()?.getValues() || [];
-  const financialData = financialSheet.getUsedRange()?.getValues() || [];
-  const productCapabilitiesData = productCapabilities.getUsedRange()?.getValues() || [];
-
-  // Enhanced extraction for general sheet
-  const generalExtractedData = generalHeadersMap.map(obj => {
-    if ((obj.ExcelLabel === "Primary Contact:" || obj.ExcelLabel === "Claims Contact:") && obj.propertyName) {
-      return extractContactPropertyMultiple(generalData, obj.ExcelLabel, obj.propertyName);
-    } else {
-      return findMetadataValue(generalData, obj.ExcelLabel.trim());
-    }
-  });
-
-  const financialExtractedData = financialHeadersMap.map(obj => findMetadataValue(financialData, obj.ExcelLabel.trim(), true));
-  const productCapabilitiesExtractedData = productCapabilitiesHeadersMap.map(obj => findMetadataValue(productCapabilitiesData, obj.ExcelLabel.trim()));
-
-  const rowData = [...generalExtractedData, ...financialExtractedData, ...productCapabilitiesExtractedData];
-  finalSheet.getRange(`A2:${lastColumnLetter}2`).setValues([rowData]);
-
-  console.log("Final Data sheet updated dynamically!");
-}
-
-// Regular value extraction
-function findMetadataValue(data: (string | number | boolean)[][], label: string): string {
-  const normalizedLabel = label.toLowerCase().replace(/\s+/g, " ").trim();
-  for (const row of data) {
-    const cell = (row[0] ?? '').toString().toLowerCase().replace(/\s+/g, " ").trim();
-    if (cell === normalizedLabel) {
-      for (let j = 1; j < row.length; j++) {
-        const val = row[j];
-        if (val !== null && val.toString().trim() !== '') {
-          return val.toString().trim();
-        }
-      }
-    }
-  }
-  return '';
-}
-
-// Enhanced function to extract contact details by property
 function extractContactPropertyMultiple(
   data: (string | number | boolean)[][],
   label: string,
@@ -93,30 +5,39 @@ function extractContactPropertyMultiple(
 ): string {
   const matches: string[] = [];
   const labelNormalized = label.toLowerCase().trim();
+  let isReading = false;
 
   for (let i = 0; i < data.length; i++) {
-    const rowLabel = (data[i][0] ?? '').toString().toLowerCase().trim();
-    if (rowLabel === labelNormalized) {
-      const name = (data[i + 0]?.[1] ?? '').toString().trim();
-      const title = (data[i + 1]?.[1] ?? '').toString().trim();
-      const email = (data[i + 2]?.[1] ?? '').toString().trim();
-      const phone = (data[i + 3]?.[1] ?? '').toString().trim();
+    const row = data[i];
+    const cellLabel = (row[0] ?? '').toString().toLowerCase().trim();
 
+    // Start of new contact group
+    if (cellLabel === labelNormalized) {
+      isReading = true;
+    } else if (cellLabel && cellLabel !== '') {
+      // New label found, stop reading contacts
+      if (isReading) break;
+    }
+
+    if (isReading) {
+      let value = "";
       switch (property) {
         case "name":
-          if (name) matches.push(name);
+          value = (row[1] ?? '').toString().trim();
           break;
         case "title":
-          if (title) matches.push(title);
+          value = (row[2] ?? '').toString().trim();
           break;
         case "email":
-          if (email) matches.push(email);
+          value = (row[3] ?? '').toString().trim();
           break;
         case "phone":
-          if (phone) matches.push(phone);
+          value = (row[4] ?? '').toString().trim();
           break;
       }
-      i += 3; // Move to next block of contact
+      if (value) {
+        matches.push(value);
+      }
     }
   }
 
