@@ -1,85 +1,46 @@
-const allHeaders = [...generalHeadersMap, ...financialHeadersMap, ...productCapabilitiesHeadersMap].map(h => h.FinalSheetDataHeader);
-  finalSheet.getRange(`A1:${getExcelColumnLetter(allHeaders.length)}1`).setValues([allHeaders]);
+// Smarter logic for non-tabular financial data (e.g., Min Amt for New Policy)
+function findCellBelowHeader(
+  data: (string | number | boolean)[][],
+  rowLabel: string,
+  columnLabel: string
+): string {
+  const targetRowLabel = rowLabel.toLowerCase().trim();
+  const targetColumnLabel = columnLabel.toLowerCase().trim();
 
-  const generalData = generalSheet.getUsedRange()?.getValues() || [];
-  const financialData = financialSheet.getUsedRange()?.getValues() || [];
-  const productCapabilitiesData = productCapabilities.getUsedRange()?.getValues() || [];
+  let headerRowIndex = -1;
+  let colIndex = -1;
 
-  const generalExtractedData = generalHeadersMap.map(obj => {
-    if ((obj.ExcelLabel === "Primary Contact:" || obj.ExcelLabel === "Claims Contact:") && obj.propertyName) {
-      return extractContactPropertyMultiple(generalData, obj.ExcelLabel, obj.propertyName);
-    } else {
-      return findMetadataValue(generalData, obj.ExcelLabel.trim());
-    }
-  });
-
-  const financialExtractedData = financialHeadersMap.map(obj => {
-    if (obj.ExcelLabel === "New Policy" && obj.propertyName === "Min Amt") {
-      return findColumnByHeader(financialData, "New Policy", "Min Amt");
-    } else if (obj.ExcelLabel === "New Policy" && obj.propertyName === "%") {
-      return findColumnByHeader(financialData, "New Policy", "%");
-    } else if (obj.ExcelLabel === "Renewal Policy" && obj.propertyName === "%") {
-      return findColumnByHeader(financialData, "Renewal Policy", "%");
-    } else {
-      return findMetadataValue(financialData, obj.ExcelLabel.trim());
-    }
-  });
-
-  const productCapabilitiesExtractedData = productCapabilitiesHeadersMap.map(obj => findMetadataValue(productCapabilitiesData, obj.ExcelLabel.trim()));
-
-  const rowData = [...generalExtractedData, ...financialExtractedData, ...productCapabilitiesExtractedData];
-  finalSheet.getRange(`A2:${getExcelColumnLetter(rowData.length)}2`).setValues([rowData]);
-
-  console.log("Final Data sheet updated dynamically!");
-}
-
-// Extract structured metadata value
-function findMetadataValue(data: (string | number | boolean)[][], label: string): string {
-  const normalizedLabel = label.toLowerCase().replace(/\s+/g, " ").trim();
-  for (const row of data) {
-    const cell = (row[0] ?? '').toString().toLowerCase().replace(/\s+/g, " ").trim();
-    if (cell === normalizedLabel) {
-      for (let j = 1; j < row.length; j++) {
-        const val = row[j];
-        if (val !== null && val.toString().trim() !== '') {
-          return val.toString().trim();
-        }
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    for (let j = 0; j < row.length; j++) {
+      const cell = row[j]?.toString().toLowerCase().trim();
+      if (cell === targetColumnLabel) {
+        headerRowIndex = i;
+        colIndex = j;
+        break;
       }
     }
+    if (headerRowIndex !== -1) break;
   }
+
+  if (headerRowIndex === -1 || colIndex === -1) return '';
+
+  for (let i = headerRowIndex + 1; i < data.length; i++) {
+    const row = data[i];
+    const firstCol = row[0]?.toString().toLowerCase().trim();
+    if (firstCol === targetRowLabel) {
+      return row[colIndex]?.toString().trim() ?? '';
+    }
+  }
+
   return '';
 }
 
-// Handle special column headers with values in horizontal row
-function findColumnByHeader(data: (string | number | boolean)[][], labelRow: string, columnLabel: string): string {
-  const row = data.find(r => r[0]?.toString().toLowerCase().trim() === labelRow.toLowerCase().trim());
-  if (!row) return '';
 
-  const headerRow = data[0].map(val => val?.toString().toLowerCase().trim());
-  const colIndex = headerRow.findIndex(h => h === columnLabel.toLowerCase().trim());
-  if (colIndex === -1) return '';
-
-  return row[colIndex]?.toString().trim() ?? '';
-}
-
-// Extract specific property from contact fields like name/email/phone
-function extractContactPropertyMultiple(data: (string | number | boolean)[][], label: string, prop: string): string {
-  const matches = data.filter(row => row[0]?.toString().trim() === label.trim());
-  const propIndexMap = { name: 1, title: 2, email: 3, phone: 4 };
-
-  return matches
-    .map(row => row[propIndexMap[prop]]?.toString().trim())
-    .filter(Boolean)
-    .join(", ");
-}
-
-// Convert index to Excel column letter
-function getExcelColumnLetter(colIndex: number): string {
-  let result = '';
-  while (colIndex > 0) {
-    const mod = (colIndex - 1) % 26;
-    result = String.fromCharCode(65 + mod) + result;
-    colIndex = Math.floor((colIndex - mod) / 26);
+const financialExtractedData = financialHeadersMap.map(obj => {
+  if (obj.ExcelLabel && obj.propertyName) {
+    return findCellBelowHeader(financialData, obj.ExcelLabel, obj.propertyName);
+  } else {
+    return findMetadataValue(financialData, obj.ExcelLabel.trim());
   }
-  return result;
-}
+});
