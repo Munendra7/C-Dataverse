@@ -1,3 +1,148 @@
+function main(workbook: ExcelScript.Workbook) {
+  const generalSheet = workbook.getWorksheet("General Info");
+  const financialSheet = workbook.getWorksheet("Financial");
+  const productCapabilities = workbook.getWorksheet("Product Capabilities");
+
+  if (!generalSheet || !financialSheet || !productCapabilities) {
+    console.log("One or more required sheets are missing!");
+    return;
+  }
+
+  // Check for existing Final Data sheet
+  let finalSheet = workbook.getWorksheet("Final Data");
+  if (!finalSheet) {
+    finalSheet = workbook.addWorksheet("Final Data");
+  } else {
+    finalSheet.getUsedRange()?.clear(); // Clears existing content
+  }
+
+  // Define dynamic column mappings in required format
+  const generalHeadersMap: { ExcelLabel: string; FinalSheetDataHeader: string; propertyName?: string }[] = [
+    { ExcelLabel: "Local Broker Required?", FinalSheetDataHeader: "Broker Requirement" },
+    { ExcelLabel: "Insurer:", FinalSheetDataHeader: "Local Insurer Name" },
+    { ExcelLabel: "Local Reinsurer Address", FinalSheetDataHeader: "Local Reinsurer Address" },
+    { ExcelLabel: "Local Reinsurer Commission Percent", FinalSheetDataHeader: "Local Reinsurer Commission" },
+    { ExcelLabel: "Country", FinalSheetDataHeader: "Local Reinsurer Country" },
+    { ExcelLabel: "Local Reinsurer Name", FinalSheetDataHeader: "Local Reinsurer Name" },
+    { ExcelLabel: "Local Reinsurer Notes", FinalSheetDataHeader: "Local Reinsurer Notes" },
+    { ExcelLabel: "Local Reinsurer Retention Percent", FinalSheetDataHeader: "Local Reinsurer Retention %" },
+    { ExcelLabel: "Is a Local Reinsurer used? (If No, disregard the below questions)", FinalSheetDataHeader: "Local Reinsurer?" },
+    { ExcelLabel: "Local Insurer Abbreviated Name:", FinalSheetDataHeader: "Partner Abbreviated Name" },
+    { ExcelLabel: "Address:", FinalSheetDataHeader: "Partner Address" },
+    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Email", propertyName: "email" },
+    { ExcelLabel: "Claims Contact:", FinalSheetDataHeader: "Partner Claim Contact Name", propertyName: "name" },
+    { ExcelLabel: "Insurer:", FinalSheetDataHeader: "Partner Name" },
+    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Email", propertyName: "email" },
+    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Name", propertyName: "name" },
+    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Phone", propertyName: "phone" },
+    { ExcelLabel: "Primary Contact:", FinalSheetDataHeader: "Partner Primary Contact Title", propertyName: "title" }
+  ];
+
+  const financialHeadersMap: { ExcelLabel: string; FinalSheetDataHeader: string, propertyName?: string }[] = [
+    { ExcelLabel: "Payment conditions:", FinalSheetDataHeader: "Cash Before Cover?" },
+    { ExcelLabel: "Permitted Collection Type(s)", FinalSheetDataHeader: "Collection Types - Permitted" },
+    { ExcelLabel: "Preferred Collection Type", FinalSheetDataHeader: "Preferred Collection Types" },
+    { ExcelLabel: "Currencies Available", FinalSheetDataHeader: "Available Policy Currency" },
+    { ExcelLabel: "Currencies Available", FinalSheetDataHeader: "Standard Policy Currency" },
+    { ExcelLabel: "Local Insurer Retention Percent (minimum required)", FinalSheetDataHeader: "Insurer Retention Percentage" },
+    { ExcelLabel : `Payment Notes (add any payment or collection information that is unique to your company or country):`, FinalSheetDataHeader: "Payment Notes" },
+    { ExcelLabel : "Payment Period:", FinalSheetDataHeader : "Payment Period"},
+    { ExcelLabel : "Payment conditions:", FinalSheetDataHeader : "Payment Type"},
+    { ExcelLabel : "Reinsurance Commission Currency", FinalSheetDataHeader : "Reinsurance (Ceding) Comm - Currency"},
+    { ExcelLabel : "New Policy", FinalSheetDataHeader : "Reinsurance (Ceding) Comm - Minimum", propertyName: "Min Amt"}, // Need to handle seperately
+    { ExcelLabel : "New Policy", FinalSheetDataHeader : "Reinsurance (Ceding) Comm Pct", propertyName: "%"}, // Need to handle seperately
+    { ExcelLabel : "Renewal Policy", FinalSheetDataHeader : "Reinsurance Renewal (Ceding) Comm Pct", propertyName:"%"} // Need to handle seperately
+  ];
+
+  const productCapabilitiesHeadersMap: { ExcelLabel: string; FinalSheetDataHeader: string }[] = [
+    { ExcelLabel: "Can you issue manuscript wording?", FinalSheetDataHeader: "Manuscripting allowed?" },
+    { ExcelLabel: "Requirements Notes", FinalSheetDataHeader: "Partner Notes" },
+    { ExcelLabel: "What, if any, conditions are there when backdating?", FinalSheetDataHeader: "Policy - Backdating Conditions" },
+    { ExcelLabel: `Regulatory filing required if using BHSI/manuscript wording?
+    If a filing is required, what documents do you need?
+    How long does the filing take?`, FinalSheetDataHeader: "Policy - Filing Requirements?" },
+    { ExcelLabel: `Policy Language?
+    If not English, is an English translation available?`, FinalSheetDataHeader: "Policy - Language" },
+    { ExcelLabel: "Minimum Policy Period", FinalSheetDataHeader: "Policy Term - < 1 year allowed?" }, // Need to handle seperately
+    { ExcelLabel: "Maximum Policy Period", FinalSheetDataHeader: "Policy Term - Maximum" }, // Need to handle seperately
+    { ExcelLabel: "Policy Wording used?", FinalSheetDataHeader: "Policy Wording - Good Local Standard Available?" }, // Need to handle seperately
+    { ExcelLabel: "Local Policy Wording Notes", FinalSheetDataHeader: "Policy Wording Notes" },
+    { ExcelLabel: "Requirements (Subjectivities)*", FinalSheetDataHeader: "Subjectivities" },
+    { ExcelLabel: "Tie-In of Limits Allowed?", FinalSheetDataHeader: "Tie-in of Limits Permitted?" } // Need to handle seperately
+  ];
+
+  // Combine headers dynamically
+  const allHeaders = [...generalHeadersMap.map(obj => obj.FinalSheetDataHeader), ...financialHeadersMap.map(obj => obj.FinalSheetDataHeader), ...productCapabilitiesHeadersMap.map(obj => obj.FinalSheetDataHeader)];
+  //finalSheet.getRange(`A1:${String.fromCharCode(65 + allHeaders.length - 1)}1`).setValues([allHeaders]);
+
+  // Dynamically find correct last column for headers
+  const lastColumn = allHeaders.length;
+  const lastColumnLetter = lastColumn > 26
+    ? `A${String.fromCharCode(65 + (lastColumn - 27))}`
+    : String.fromCharCode(65 + (lastColumn - 1));
+
+  // Corrected range selection
+  const headerRange = finalSheet.getRange(`A1:${lastColumnLetter}1`);
+  headerRange.setValues([allHeaders]);
+
+  // Fetch values dynamically from both sheets
+  const generalData = generalSheet.getUsedRange()?.getValues() || [];
+  const financialData = financialSheet.getUsedRange()?.getValues() || [];
+  const productCapabilitiesData = productCapabilities.getUsedRange()?.getValues() || [];
+
+  // Extract values dynamically using the structured mapping
+  const generalExtractedData = generalHeadersMap.map(obj => {
+    if ((obj.ExcelLabel === "Primary Contact:" || obj.ExcelLabel === "Claims Contact:") && obj.propertyName) {
+      return extractContactPropertyMultiple(generalData, obj.ExcelLabel, obj.propertyName);
+    } else {
+      return findMetadataValue(generalData, obj.ExcelLabel.trim());
+    }
+  });
+  const financialExtractedData = financialHeadersMap.map(obj => findMetadataValue(financialData, obj.ExcelLabel.trim()));
+  const productCapabilitiesExtractedData = productCapabilitiesHeadersMap.map(obj => findMetadataValue(productCapabilitiesData, obj.ExcelLabel.trim()));
+
+  // Ensure the extracted data matches column count before placing values
+  const rowData = [...generalExtractedData, ...financialExtractedData, ...productCapabilitiesExtractedData];
+  //finalSheet.getRange(`A2:${String.fromCharCode(65 + rowData.length - 1)}2`).setValues([rowData]);
+  // Set values dynamically while ensuring correct range selection
+  const dataRange = finalSheet.getRange(`A2:${lastColumnLetter}2`);
+  dataRange.setValues([rowData]);
+
+  console.log("Final Data sheet updated dynamically!");
+}
+
+// Function to find metadata values (handling spaces & exact matches for Financial tab)
+function findMetadataValue(data: (string | number | boolean)[][], label: string): string {
+    const normalizedLabel = label.toLowerCase().replace(/\s+/g, " ").trim(); // Convert multi-line to single-line
+    for (const row of data) {
+      const cell = (row[0] ?? '').toString().toLowerCase().replace(/\s+/g, " ").trim(); // Normalize input
+  
+      if (cell == normalizedLabel || normalizedLabel == cell) { // Allow partial matches
+        for (let j = 1; j < row.length; j++) {
+          const val = row[j];
+          if (val !== null && val.toString().trim() !== '') {
+            return val.toString().trim();
+          }
+        }
+      }
+    }
+    return '';
+  }
+
+function extractMultipleContacts(data: (string | number | boolean)[][], label: string): string {
+    let contacts: string[] = [];
+  
+    for (const row of data) {
+      const cell = (row[0] ?? '').toString().toLowerCase().trim();
+      if (cell.includes(label.toLowerCase())) {
+        contacts.push(row.slice(1).join(" | ")); // Ensuring format: Name | Title | Email | Phone
+      }
+    }
+  
+    return contacts.length ? contacts.join("; ") : "";
+}
+
+// Enhanced function to extract contact details by property
 function extractContactPropertyMultiple(
   data: (string | number | boolean)[][],
   label: string,
@@ -23,16 +168,16 @@ function extractContactPropertyMultiple(
       let value = "";
       switch (property) {
         case "name":
-          value = (row[1] ?? '').toString().trim();
-          break;
-        case "title":
           value = (row[2] ?? '').toString().trim();
           break;
-        case "email":
+        case "title":
           value = (row[3] ?? '').toString().trim();
           break;
-        case "phone":
+        case "email":
           value = (row[4] ?? '').toString().trim();
+          break;
+        case "phone":
+          value = (row[5] ?? '').toString().trim();
           break;
       }
       if (value) {
@@ -43,3 +188,5 @@ function extractContactPropertyMultiple(
 
   return matches.length ? matches.join(", ") : "";
 }
+  
+  
