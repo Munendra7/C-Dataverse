@@ -1,0 +1,34 @@
+Great! Here's the **updated simplified table** including **license types** like **Power Apps Premium**, **Power Automate Premium**, and **Power Automate Process** to help you clearly identify what licenses are needed for each component.
+
+---
+
+### ✅ **Simplified Component Inventory with License Requirements**
+
+| **Component**                   | **Name / Description**         | **Environment**   | **Used For**                      | **Owner / Account**       | **License Type Needed**            |
+| ------------------------------- | ------------------------------ | ----------------- | --------------------------------- | ------------------------- | ---------------------------------- |
+| Power Automate Cloud Flow       | \[Flow Name]                   | Dev / Test / Prod | Business process automation       | \[User / Service Account] | **Power Automate Premium**         |
+| Power Automate Desktop Flow     | \[PAD Flow Name]               | Dev / Test / Prod | Desktop RPA automation            | \[User / Service Account] | **PAD + Attended/Unattended RPA**  |
+| Power App (Canvas/Model-driven) | \[App Name]                    | Dev / Test / Prod | User interface                    | \[Maker / Developer]      | **Power Apps Premium**             |
+| Dataverse Table                 | \[Table Name]                  | Dev / Test / Prod | Store structured data             | \[App Admin]              | **Included in Power Apps Premium** |
+| SharePoint List                 | \[List Name]                   | Dev / Test / Prod | Simple data storage               | \[SharePoint Admin]       | **Microsoft 365 (E3/E5)**          |
+| Virtual Machine                 | \[VM Name]                     | Dev / Test / Prod | Run PAD unattended flows          | \[IT / PAD User]          | **Windows License + PAD RPA**      |
+| Gateway                         | \[Gateway Name]                | Dev / Test / Prod | Connect PAD to cloud flows        | \[Gateway Owner]          | **Included with Power Platform**   |
+| Service Account                 | \[Account Name]                | Dev / Test / Prod | Authentication & flow access      | \[IT / IAM Admin]         | **Depends on usage (PAD / M365)**  |
+| Connector                       | \[e.g., HTTP, SharePoint, SQL] | Dev / Test / Prod | External integrations             | \[App Owner]              | **Standard / Premium Connector**   |
+| Process License                 | \[Use Case Name]               | Dev / Test / Prod | Unattended PAD with orchestration | \[Admin or Team License]  | **Power Automate Process License** |
+
+---
+
+### 🔑 **License Types Summary**
+
+| **License Type**                   | **Used For**                                                                |
+| ---------------------------------- | --------------------------------------------------------------------------- |
+| **Power Apps Premium**             | Advanced apps using Dataverse, premium connectors                           |
+| **Power Automate Premium**         | Cloud flows with premium connectors, Dataverse, HTTP, etc.                  |
+| **Power Automate Process License** | Run unattended desktop flows triggered via cloud flows (shared team use)    |
+| **PAD RPA (Attended/Unattended)**  | Desktop automation, either with user presence (attended) or fully automated |
+| **Microsoft 365 (E3/E5)**          | SharePoint, Outlook, Teams, and access to standard connectors               |
+
+---
+
+Would you like this as an **Excel template** or Google Sheet to track and fill in for your project?
