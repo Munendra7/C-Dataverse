@@ -1,20 +1,19 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using static System.Net.Mime.MediaTypeNames;
+using static System.Runtime.InteropServices.JavaScript.JSType;
+using Text = DocumentFormat.OpenXml.Wordprocessing.Text;
 
-namespace OpenXmlContentControlDemo
+namespace CreateDocFromTemplate
 {
     internal class Program
     {
         static void Main(string[] args)
         {
-            string templatePath = "Template.docx"; // Ensure this exists
-            string outputPath = "Output.docx";
+            string templatePath = "C:\\Users\\munendra\\Downloads\\ISA Template - Black.docx";
+            string outputPath = "C:\\Users\\munendra\\Downloads\\Output.docx";
 
             Console.WriteLine("🔍 Extracting payload...");
             var payload = ExtractRequiredPayload(templatePath);
@@ -22,8 +21,9 @@ namespace OpenXmlContentControlDemo
             File.WriteAllText("PayloadTemplate.json", json);
             Console.WriteLine(json);
 
+
             Console.WriteLine("\n📝 Populating document...");
-            PopulateContentControlsFromJson(templatePath, outputPath, json);
+            PopulateContentControlsFromJson(templatePath, outputPath, sampleJson);
             Console.WriteLine($"✅ Output saved to: {outputPath}");
         }
 
@@ -85,9 +85,7 @@ namespace OpenXmlContentControlDemo
                         {
                             if (sdt.SdtProperties?.GetFirstChild<CheckBox>() != null)
                                 payload[tag] = false;
-                            else if (sdt.SdtProperties?.GetFirstChild<Date>() != null)
-                                payload[tag] = "2025-07-31";
-                            else if (sdt.SdtProperties?.GetFirstChild<DropDownList>() != null)
+                            else if (sdt.SdtProperties?.GetFirstChild<SdtContentDropDownList>() != null)
                                 payload[tag] = "";
                             else
                                 payload[tag] = "";
@@ -131,12 +129,7 @@ namespace OpenXmlContentControlDemo
                         foreach (var text in sdt.Descendants<Text>())
                             text.Text = val;
                     }
-                    else if (token.Type == JTokenType.String && sdt.SdtProperties?.GetFirstChild<Date>() != null)
-                    {
-                        foreach (var text in sdt.Descendants<Text>())
-                            text.Text = token.ToString();
-                    }
-                    else if (token.Type == JTokenType.String && sdt.SdtProperties?.GetFirstChild<DropDownList>() != null)
+                    else if (token.Type == JTokenType.String && sdt.SdtProperties?.GetFirstChild<SdtContentDropDownList>() != null)
                     {
                         foreach (var text in sdt.Descendants<Text>())
                             text.Text = token.ToString();
