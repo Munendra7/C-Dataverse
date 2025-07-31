@@ -12,7 +12,7 @@ namespace CreateDocFromTemplate
     {
         static void Main(string[] args)
         {
-            string templatePath = "C:\\Users\\munendra\\Downloads\\ISA Template - Black.docx";
+            string templatePath = "C:\\Users\\munendra\\Downloads\\BKU Template - Red.docx";
             string outputPath = "C:\\Users\\munendra\\Downloads\\Output.docx";
 
             Console.WriteLine("🔍 Extracting payload...");
@@ -20,6 +20,8 @@ namespace CreateDocFromTemplate
             var json = JsonConvert.SerializeObject(payload, Formatting.Indented);
             File.WriteAllText("PayloadTemplate.json", json);
             Console.WriteLine(json);
+
+            
 
 
             Console.WriteLine("\n📝 Populating document...");
@@ -118,21 +120,18 @@ namespace CreateDocFromTemplate
 
                     if (token.Type == JTokenType.String || token.Type == JTokenType.Integer)
                     {
-                        foreach (var text in sdt.Descendants<Text>())
-                            text.Text = token.ToString();
+                        SetSingleText(sdt, token.ToString());
                     }
                     else if (token.Type == JTokenType.Boolean && sdt.SdtProperties.GetFirstChild<CheckBox>() != null)
                     {
                         var isChecked = token.Value<bool>();
                         var val = isChecked ? "☒" : "☐";
 
-                        foreach (var text in sdt.Descendants<Text>())
-                            text.Text = val;
+                        SetSingleText(sdt, val);
                     }
                     else if (token.Type == JTokenType.String && sdt.SdtProperties?.GetFirstChild<SdtContentDropDownList>() != null)
                     {
-                        foreach (var text in sdt.Descendants<Text>())
-                            text.Text = token.ToString();
+                        SetSingleText(sdt, token.ToString());
                     }
                     else if (token.Type == JTokenType.Array)
                     {
@@ -150,8 +149,7 @@ namespace CreateDocFromTemplate
                                 var innerTag = innerSdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
                                 if (!string.IsNullOrWhiteSpace(innerTag) && objFields.ContainsKey(innerTag))
                                 {
-                                    foreach (var text in innerSdt.Descendants<Text>())
-                                        text.Text = objFields[innerTag]?.ToString();
+                                    SetSingleText(innerSdt, objFields[innerTag]?.ToString());
                                 }
                             }
 
@@ -165,6 +163,18 @@ namespace CreateDocFromTemplate
 
             File.Copy(tempFile, outputPath, true);
             File.Delete(tempFile);
+        }
+
+        // Helper method to set only the first <Text> and clear the rest
+        private static void SetSingleText(SdtElement sdt, string value)
+        {
+            var textElements = sdt.Descendants<Text>().ToList();
+            if (textElements.Count > 0)
+            {
+                textElements[0].Text = value;
+                for (int i = 1; i < textElements.Count; i++)
+                    textElements[i].Text = string.Empty;
+            }
         }
     }
 }
