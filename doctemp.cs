@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace OpenXmlContentControlDemo
@@ -12,64 +13,96 @@ namespace OpenXmlContentControlDemo
     {
         static void Main(string[] args)
         {
-            string templatePath = "Template.docx"; // Ensure this file exists
+            string templatePath = "Template.docx";
             string outputPath = "Output.docx";
 
-            Console.WriteLine("Extracting content controls...");
-            var controls = ExtractContentControls(templatePath);
-            foreach (var kvp in controls)
-            {
-                Console.WriteLine($"Tag: {kvp.Key} => Value(s): {string.Join(", ", kvp.Value)}");
-            }
+            Console.WriteLine("Extracting required payload from template...");
+            var payload = ExtractRequiredPayload(templatePath);
 
-            Console.WriteLine("\nPopulating Word with JSON data...");
+            string jsonPayload = JsonConvert.SerializeObject(payload, Formatting.Indented);
+            Console.WriteLine(jsonPayload);
 
-            string json = @"{
-                'FirstName': 'Alice',
-                'Bio': 'Full-stack developer.',
-                'Skills': ['C#', 'JavaScript', 'SQL']
-            }";
+            // Save payload for reuse
+            File.WriteAllText("PayloadTemplate.json", jsonPayload);
 
-            PopulateContentControlsFromJson(templatePath, outputPath, json);
-            Console.WriteLine($"Done. New file saved as '{outputPath}'.");
+            Console.WriteLine("\nPopulating template with sample values...");
+            PopulateContentControlsFromJson(templatePath, outputPath, jsonPayload);
+            Console.WriteLine($"Done. Output saved to {outputPath}");
         }
 
-        public static Dictionary<string, List<string>> ExtractContentControls(string filePath)
+        public static JObject ExtractRequiredPayload(string filePath)
         {
-            var contentControlMap = new Dictionary<string, List<string>>();
+            var payload = new JObject();
 
             using (WordprocessingDocument wordDoc = WordprocessingDocument.Open(filePath, false))
             {
-                var sdtElements = wordDoc.MainDocumentPart.Document.Descendants<SdtElement>();
+                var sdtElements = wordDoc.MainDocumentPart.Document.Body.Descendants<SdtElement>();
+
+                var repeatingGroups = new Dictionary<string, List<SdtElement>>();
 
                 foreach (var sdt in sdtElements)
                 {
                     var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
-                    var text = string.Join("", sdt.Descendants<Text>().Select(t => t.Text));
-
                     if (string.IsNullOrWhiteSpace(tag)) continue;
 
-                    if (!contentControlMap.ContainsKey(tag))
-                        contentControlMap[tag] = new List<string>();
+                    if (sdt.GetType() == typeof(SdtBlock) && sdt.Descendants<SdtElement>().Any(e => e != sdt && e.SdtProperties?.GetFirstChild<Tag>() != null))
+                    {
+                        // Repeating section (with nested SDTs)
+                        if (!repeatingGroups.ContainsKey(tag))
+                            repeatingGroups[tag] = new List<SdtElement>();
+                        repeatingGroups[tag].Add(sdt);
+                    }
+                    else
+                    {
+                        // Single field
+                        if (!payload.ContainsKey(tag))
+                            payload[tag] = "";
+                    }
+                }
 
-                    contentControlMap[tag].Add(text);
+                // Process repeating content controls
+                foreach (var group in repeatingGroups)
+                {
+                    var tag = group.Key;
+                    var array = new JArray();
+
+                    // Pick first instance to understand nested tags
+                    var first = group.Value.FirstOrDefault();
+                    if (first == null) continue;
+
+                    var innerTags = first.Descendants<SdtElement>()
+                        .Where(x => x.SdtProperties?.GetFirstChild<Tag>() != null)
+                        .Select(x => x.SdtProperties.GetFirstChild<Tag>().Val.Value)
+                        .Distinct();
+
+                    var item = new JObject();
+                    foreach (var innerTag in innerTags)
+                    {
+                        item[innerTag] = "";
+                    }
+
+                    array.Add(item);
+                    payload[tag] = array;
                 }
             }
 
-            return contentControlMap;
+            return payload;
         }
 
         public static void PopulateContentControlsFromJson(string templatePath, string outputPath, string jsonPayload)
         {
             var payload = JObject.Parse(jsonPayload);
             string tempFile = Path.GetTempFileName();
-            File.Copy(templatePath, tempFile, overwrite: true);
+            File.Copy(templatePath, tempFile, true);
 
             using (WordprocessingDocument wordDoc = WordprocessingDocument.Open(tempFile, true))
             {
                 var doc = wordDoc.MainDocumentPart.Document;
+                var body = doc.Body;
 
-                foreach (var sdt in doc.Descendants<SdtElement>().ToList())
+                var sdtBlocks = body.Descendants<SdtBlock>().ToList();
+
+                foreach (var sdt in sdtBlocks)
                 {
                     var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
                     if (string.IsNullOrWhiteSpace(tag) || !payload.ContainsKey(tag)) continue;
@@ -83,17 +116,28 @@ namespace OpenXmlContentControlDemo
                     }
                     else if (token.Type == JTokenType.Array)
                     {
+                        // Repeating block
                         var parent = sdt.Parent;
                         var prototype = sdt.CloneNode(true);
-                        sdt.Remove();
+                        var jsonArray = (JArray)token;
 
-                        foreach (var item in token)
+                        sdt.Remove(); // remove original
+
+                        foreach (var entry in jsonArray)
                         {
-                            var newSdt = (SdtElement)prototype.CloneNode(true);
-                            foreach (var text in newSdt.Descendants<Text>())
+                            var newSdt = (SdtBlock)prototype.CloneNode(true);
+                            var entryObject = (JObject)entry;
+
+                            foreach (var innerSdt in newSdt.Descendants<SdtElement>())
                             {
-                                text.Text = item.ToString();
+                                var innerTag = innerSdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
+                                if (!string.IsNullOrWhiteSpace(innerTag) && entryObject.ContainsKey(innerTag))
+                                {
+                                    foreach (var text in innerSdt.Descendants<Text>())
+                                        text.Text = entryObject[innerTag]?.ToString();
+                                }
                             }
+
                             parent.AppendChild(newSdt);
                         }
                     }
@@ -102,7 +146,7 @@ namespace OpenXmlContentControlDemo
                 doc.Save();
             }
 
-            File.Copy(tempFile, outputPath, overwrite: true);
+            File.Copy(tempFile, outputPath, true);
             File.Delete(tempFile);
         }
     }
