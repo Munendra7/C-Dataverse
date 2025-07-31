@@ -13,61 +13,85 @@ namespace OpenXmlContentControlDemo
     {
         static void Main(string[] args)
         {
-            string templatePath = "Template.docx";   // Your template .docx
+            string templatePath = "Template.docx"; // Ensure this exists
             string outputPath = "Output.docx";
 
-            Console.WriteLine("🔍 Extracting payload structure from Word...");
+            Console.WriteLine("🔍 Extracting payload...");
             var payload = ExtractRequiredPayload(templatePath);
-            var jsonPayload = JsonConvert.SerializeObject(payload, Formatting.Indented);
-            Console.WriteLine(jsonPayload);
+            var json = JsonConvert.SerializeObject(payload, Formatting.Indented);
+            File.WriteAllText("PayloadTemplate.json", json);
+            Console.WriteLine(json);
 
-            File.WriteAllText("PayloadTemplate.json", jsonPayload);
-
-            Console.WriteLine("\n📝 Populating content controls from payload...");
-            PopulateContentControlsFromJson(templatePath, outputPath, jsonPayload);
-            Console.WriteLine($"✅ Done! Output saved to: {outputPath}");
+            Console.WriteLine("\n📝 Populating document...");
+            PopulateContentControlsFromJson(templatePath, outputPath, json);
+            Console.WriteLine($"✅ Output saved to: {outputPath}");
         }
 
         public static JObject ExtractRequiredPayload(string filePath)
         {
             var payload = new JObject();
             var childTagsInsideRepeaters = new HashSet<string>();
+            var repeatingSectionTags = new HashSet<string>();
+            var repeatingSectionStructures = new Dictionary<string, List<string>>();
 
             using (WordprocessingDocument wordDoc = WordprocessingDocument.Open(filePath, false))
             {
                 var body = wordDoc.MainDocumentPart.Document.Body;
                 var sdtElements = body.Descendants<SdtElement>();
 
+                // First pass: identify repeaters
                 foreach (var sdt in sdtElements)
                 {
                     var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
                     if (string.IsNullOrWhiteSpace(tag)) continue;
 
-                    // Repeating Section (outer block)
-                    if (sdt is SdtBlock sb && sb.Descendants<SdtElement>().Any(x => x != sdt && x.SdtProperties?.GetFirstChild<Tag>() != null))
+                    if (sdt is SdtBlock || sdt is SdtRow)
+                    {
+                        var innerFields = sdt.Descendants<SdtElement>()
+                            .Where(x => x != sdt && x.SdtProperties?.GetFirstChild<Tag>() != null)
+                            .Select(x => x.SdtProperties.GetFirstChild<Tag>().Val.Value)
+                            .Distinct()
+                            .ToList();
+
+                        if (innerFields.Any())
+                        {
+                            repeatingSectionTags.Add(tag);
+                            repeatingSectionStructures[tag] = innerFields;
+                            foreach (var childTag in innerFields)
+                                childTagsInsideRepeaters.Add(childTag);
+                        }
+                    }
+                }
+
+                // Second pass: build payload
+                foreach (var sdt in sdtElements)
+                {
+                    var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
+                    if (string.IsNullOrWhiteSpace(tag)) continue;
+
+                    if (repeatingSectionTags.Contains(tag))
                     {
                         if (!payload.ContainsKey(tag))
                         {
                             var item = new JObject();
-                            var innerFields = sb.Descendants<SdtElement>()
-                                .Where(x => x != sdt && x.SdtProperties?.GetFirstChild<Tag>() != null)
-                                .Select(x => x.SdtProperties.GetFirstChild<Tag>().Val.Value)
-                                .Distinct();
-
-                            foreach (var field in innerFields)
-                            {
+                            foreach (var field in repeatingSectionStructures[tag])
                                 item[field] = "";
-                                childTagsInsideRepeaters.Add(field); // Mark these as "nested"
-                            }
-
                             payload[tag] = new JArray { item };
                         }
                     }
-                    // Regular field (outside repeating block)
                     else if (!childTagsInsideRepeaters.Contains(tag))
                     {
                         if (!payload.ContainsKey(tag))
-                            payload[tag] = "";
+                        {
+                            if (sdt.SdtProperties?.GetFirstChild<CheckBox>() != null)
+                                payload[tag] = false;
+                            else if (sdt.SdtProperties?.GetFirstChild<Date>() != null)
+                                payload[tag] = "2025-07-31";
+                            else if (sdt.SdtProperties?.GetFirstChild<DropDownList>() != null)
+                                payload[tag] = "";
+                            else
+                                payload[tag] = "";
+                        }
                     }
                 }
             }
@@ -78,16 +102,16 @@ namespace OpenXmlContentControlDemo
         public static void PopulateContentControlsFromJson(string templatePath, string outputPath, string jsonPayload)
         {
             var payload = JObject.Parse(jsonPayload);
-            var tempFile = Path.GetTempFileName();
+            string tempFile = Path.GetTempFileName();
             File.Copy(templatePath, tempFile, true);
 
             using (WordprocessingDocument wordDoc = WordprocessingDocument.Open(tempFile, true))
             {
                 var doc = wordDoc.MainDocumentPart.Document;
                 var body = doc.Body;
-                var sdtBlocks = body.Descendants<SdtBlock>().ToList();
+                var sdtElements = body.Descendants<SdtElement>().ToList();
 
-                foreach (var sdt in sdtBlocks)
+                foreach (var sdt in sdtElements)
                 {
                     var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
                     if (string.IsNullOrWhiteSpace(tag) || !payload.ContainsKey(tag)) continue;
@@ -99,16 +123,33 @@ namespace OpenXmlContentControlDemo
                         foreach (var text in sdt.Descendants<Text>())
                             text.Text = token.ToString();
                     }
+                    else if (token.Type == JTokenType.Boolean && sdt.SdtProperties.GetFirstChild<CheckBox>() != null)
+                    {
+                        var isChecked = token.Value<bool>();
+                        var val = isChecked ? "☒" : "☐";
+
+                        foreach (var text in sdt.Descendants<Text>())
+                            text.Text = val;
+                    }
+                    else if (token.Type == JTokenType.String && sdt.SdtProperties?.GetFirstChild<Date>() != null)
+                    {
+                        foreach (var text in sdt.Descendants<Text>())
+                            text.Text = token.ToString();
+                    }
+                    else if (token.Type == JTokenType.String && sdt.SdtProperties?.GetFirstChild<DropDownList>() != null)
+                    {
+                        foreach (var text in sdt.Descendants<Text>())
+                            text.Text = token.ToString();
+                    }
                     else if (token.Type == JTokenType.Array)
                     {
-                        // Handle repeating sections
                         var prototype = sdt.CloneNode(true);
                         var parent = sdt.Parent;
                         sdt.Remove();
 
                         foreach (var obj in token)
                         {
-                            var newSdt = (SdtBlock)prototype.CloneNode(true);
+                            var newSdt = (SdtElement)prototype.CloneNode(true);
                             var objFields = (JObject)obj;
 
                             foreach (var innerSdt in newSdt.Descendants<SdtElement>())
