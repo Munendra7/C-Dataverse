@@ -13,21 +13,19 @@ namespace OpenXmlContentControlDemo
     {
         static void Main(string[] args)
         {
-            string templatePath = "Template.docx";
+            string templatePath = "Template.docx";   // Ensure this file exists
             string outputPath = "Output.docx";
 
-            Console.WriteLine("Extracting required payload from template...");
+            Console.WriteLine("🔍 Extracting content control structure...");
             var payload = ExtractRequiredPayload(templatePath);
-
-            string jsonPayload = JsonConvert.SerializeObject(payload, Formatting.Indented);
+            var jsonPayload = JsonConvert.SerializeObject(payload, Formatting.Indented);
             Console.WriteLine(jsonPayload);
 
-            // Save payload for reuse
             File.WriteAllText("PayloadTemplate.json", jsonPayload);
 
-            Console.WriteLine("\nPopulating template with sample values...");
+            Console.WriteLine("\n📝 Populating document with placeholder values...");
             PopulateContentControlsFromJson(templatePath, outputPath, jsonPayload);
-            Console.WriteLine($"Done. Output saved to {outputPath}");
+            Console.WriteLine($"✅ Document generated at: {outputPath}");
         }
 
         public static JObject ExtractRequiredPayload(string filePath)
@@ -38,51 +36,35 @@ namespace OpenXmlContentControlDemo
             {
                 var sdtElements = wordDoc.MainDocumentPart.Document.Body.Descendants<SdtElement>();
 
-                var repeatingGroups = new Dictionary<string, List<SdtElement>>();
-
                 foreach (var sdt in sdtElements)
                 {
                     var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
-                    if (string.IsNullOrWhiteSpace(tag)) continue;
+                    if (string.IsNullOrWhiteSpace(tag))
+                        continue;
 
-                    if (sdt.GetType() == typeof(SdtBlock) && sdt.Descendants<SdtElement>().Any(e => e != sdt && e.SdtProperties?.GetFirstChild<Tag>() != null))
+                    // Repeating section logic (SdtBlock with nested SDTs)
+                    if (sdt is SdtBlock sb && sb.Descendants<SdtElement>().Any(x => x != sdt && x.SdtProperties?.GetFirstChild<Tag>() != null))
                     {
-                        // Repeating section (with nested SDTs)
-                        if (!repeatingGroups.ContainsKey(tag))
-                            repeatingGroups[tag] = new List<SdtElement>();
-                        repeatingGroups[tag].Add(sdt);
+                        if (!payload.ContainsKey(tag))
+                        {
+                            var innerFields = sb.Descendants<SdtElement>()
+                                .Where(x => x != sdt && x.SdtProperties?.GetFirstChild<Tag>() != null)
+                                .Select(x => x.SdtProperties.GetFirstChild<Tag>().Val.Value)
+                                .Distinct();
+
+                            var item = new JObject();
+                            foreach (var field in innerFields)
+                                item[field] = "";
+
+                            payload[tag] = new JArray { item };
+                        }
                     }
                     else
                     {
-                        // Single field
+                        // Non-repeating simple field
                         if (!payload.ContainsKey(tag))
                             payload[tag] = "";
                     }
-                }
-
-                // Process repeating content controls
-                foreach (var group in repeatingGroups)
-                {
-                    var tag = group.Key;
-                    var array = new JArray();
-
-                    // Pick first instance to understand nested tags
-                    var first = group.Value.FirstOrDefault();
-                    if (first == null) continue;
-
-                    var innerTags = first.Descendants<SdtElement>()
-                        .Where(x => x.SdtProperties?.GetFirstChild<Tag>() != null)
-                        .Select(x => x.SdtProperties.GetFirstChild<Tag>().Val.Value)
-                        .Distinct();
-
-                    var item = new JObject();
-                    foreach (var innerTag in innerTags)
-                    {
-                        item[innerTag] = "";
-                    }
-
-                    array.Add(item);
-                    payload[tag] = array;
                 }
             }
 
@@ -92,49 +74,48 @@ namespace OpenXmlContentControlDemo
         public static void PopulateContentControlsFromJson(string templatePath, string outputPath, string jsonPayload)
         {
             var payload = JObject.Parse(jsonPayload);
-            string tempFile = Path.GetTempFileName();
+            var tempFile = Path.GetTempFileName();
             File.Copy(templatePath, tempFile, true);
 
             using (WordprocessingDocument wordDoc = WordprocessingDocument.Open(tempFile, true))
             {
                 var doc = wordDoc.MainDocumentPart.Document;
                 var body = doc.Body;
-
                 var sdtBlocks = body.Descendants<SdtBlock>().ToList();
 
                 foreach (var sdt in sdtBlocks)
                 {
                     var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
-                    if (string.IsNullOrWhiteSpace(tag) || !payload.ContainsKey(tag)) continue;
+                    if (string.IsNullOrWhiteSpace(tag) || !payload.ContainsKey(tag))
+                        continue;
 
                     var token = payload[tag];
 
                     if (token.Type == JTokenType.String || token.Type == JTokenType.Integer)
                     {
+                        // Single text replacement
                         foreach (var text in sdt.Descendants<Text>())
                             text.Text = token.ToString();
                     }
                     else if (token.Type == JTokenType.Array)
                     {
-                        // Repeating block
-                        var parent = sdt.Parent;
+                        // Repeating section
                         var prototype = sdt.CloneNode(true);
-                        var jsonArray = (JArray)token;
+                        var parent = sdt.Parent;
+                        sdt.Remove(); // Remove the original block
 
-                        sdt.Remove(); // remove original
-
-                        foreach (var entry in jsonArray)
+                        foreach (var obj in token)
                         {
                             var newSdt = (SdtBlock)prototype.CloneNode(true);
-                            var entryObject = (JObject)entry;
+                            var objFields = (JObject)obj;
 
                             foreach (var innerSdt in newSdt.Descendants<SdtElement>())
                             {
                                 var innerTag = innerSdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
-                                if (!string.IsNullOrWhiteSpace(innerTag) && entryObject.ContainsKey(innerTag))
+                                if (!string.IsNullOrWhiteSpace(innerTag) && objFields.ContainsKey(innerTag))
                                 {
                                     foreach (var text in innerSdt.Descendants<Text>())
-                                        text.Text = entryObject[innerTag]?.ToString();
+                                        text.Text = objFields[innerTag]?.ToString();
                                 }
                             }
 
