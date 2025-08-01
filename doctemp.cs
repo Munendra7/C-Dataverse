@@ -1,3 +1,4 @@
+using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using Newtonsoft.Json;
@@ -21,8 +22,6 @@ namespace CreateDocFromTemplate
             File.WriteAllText("PayloadTemplate.json", json);
             Console.WriteLine(json);
 
-            
-
 
             Console.WriteLine("\n📝 Populating document...");
             PopulateContentControlsFromJson(templatePath, outputPath, sampleJson);
@@ -31,67 +30,68 @@ namespace CreateDocFromTemplate
 
         public static JObject ExtractRequiredPayload(string filePath)
         {
-            var payload = new JObject();
-            var childTagsInsideRepeaters = new HashSet<string>();
-            var repeatingSectionTags = new HashSet<string>();
-            var repeatingSectionStructures = new Dictionary<string, List<string>>();
-
             using (WordprocessingDocument wordDoc = WordprocessingDocument.Open(filePath, false))
             {
                 var body = wordDoc.MainDocumentPart.Document.Body;
-                var sdtElements = body.Descendants<SdtElement>();
+                return ExtractPayloadFromSdtElements(body.Descendants<SdtElement>());
+            }
+        }
 
-                // First pass: identify repeaters
-                foreach (var sdt in sdtElements)
+        private static JObject ExtractPayloadFromSdtElements(IEnumerable<SdtElement> sdtElements)
+        {
+            var payload = new JObject();
+            var childTagsInsideRepeaters = new HashSet<string>();
+            var repeatingSectionTags = new HashSet<string>();
+            var repeatingSectionStructures = new Dictionary<string, List<SdtElement>>();
+
+            // Identify repeaters and their children
+            foreach (var sdt in sdtElements)
+            {
+                var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
+                if (string.IsNullOrWhiteSpace(tag)) continue;
+
+                if (sdt is SdtBlock || sdt is SdtRow)
                 {
-                    var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
-                    if (string.IsNullOrWhiteSpace(tag)) continue;
+                    var innerSdts = sdt.Descendants<SdtElement>()
+                        .Where(x => x != sdt && x.SdtProperties?.GetFirstChild<Tag>() != null)
+                        .ToList();
 
-                    if (sdt is SdtBlock || sdt is SdtRow)
+                    if (innerSdts.Any())
                     {
-                        var innerFields = sdt.Descendants<SdtElement>()
-                            .Where(x => x != sdt && x.SdtProperties?.GetFirstChild<Tag>() != null)
-                            .Select(x => x.SdtProperties.GetFirstChild<Tag>().Val.Value)
-                            .Distinct()
-                            .ToList();
-
-                        if (innerFields.Any())
-                        {
-                            repeatingSectionTags.Add(tag);
-                            repeatingSectionStructures[tag] = innerFields;
-                            foreach (var childTag in innerFields)
-                                childTagsInsideRepeaters.Add(childTag);
-                        }
+                        repeatingSectionTags.Add(tag);
+                        repeatingSectionStructures[tag] = innerSdts;
+                        foreach (var childSdt in innerSdts)
+                            childTagsInsideRepeaters.Add(childSdt.SdtProperties.GetFirstChild<Tag>().Val.Value);
                     }
                 }
+            }
 
-                // Second pass: build payload
-                foreach (var sdt in sdtElements)
+            // Build payload recursively
+            foreach (var sdt in sdtElements)
+            {
+                var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
+                if (string.IsNullOrWhiteSpace(tag)) continue;
+
+                if (repeatingSectionTags.Contains(tag))
                 {
-                    var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
-                    if (string.IsNullOrWhiteSpace(tag)) continue;
-
-                    if (repeatingSectionTags.Contains(tag))
+                    if (!payload.ContainsKey(tag))
                     {
-                        if (!payload.ContainsKey(tag))
-                        {
-                            var item = new JObject();
-                            foreach (var field in repeatingSectionStructures[tag])
-                                item[field] = "";
-                            payload[tag] = new JArray { item };
-                        }
+                        var arr = new JArray();
+                        var item = ExtractPayloadFromSdtElements(repeatingSectionStructures[tag]);
+                        arr.Add(item);
+                        payload[tag] = arr;
                     }
-                    else if (!childTagsInsideRepeaters.Contains(tag))
+                }
+                else if (!childTagsInsideRepeaters.Contains(tag))
+                {
+                    if (!payload.ContainsKey(tag))
                     {
-                        if (!payload.ContainsKey(tag))
-                        {
-                            if (sdt.SdtProperties?.GetFirstChild<CheckBox>() != null)
-                                payload[tag] = false;
-                            else if (sdt.SdtProperties?.GetFirstChild<SdtContentDropDownList>() != null)
-                                payload[tag] = "";
-                            else
-                                payload[tag] = "";
-                        }
+                        if (sdt.SdtProperties?.GetFirstChild<CheckBox>() != null)
+                            payload[tag] = false;
+                        else if (sdt.SdtProperties?.GetFirstChild<SdtContentDropDownList>() != null)
+                            payload[tag] = "";
+                        else
+                            payload[tag] = "";
                     }
                 }
             }
@@ -109,60 +109,57 @@ namespace CreateDocFromTemplate
             {
                 var doc = wordDoc.MainDocumentPart.Document;
                 var body = doc.Body;
-                var sdtElements = body.Descendants<SdtElement>().ToList();
-
-                foreach (var sdt in sdtElements)
-                {
-                    var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
-                    if (string.IsNullOrWhiteSpace(tag) || !payload.ContainsKey(tag)) continue;
-
-                    var token = payload[tag];
-
-                    if (token.Type == JTokenType.String || token.Type == JTokenType.Integer)
-                    {
-                        SetSingleText(sdt, token.ToString());
-                    }
-                    else if (token.Type == JTokenType.Boolean && sdt.SdtProperties.GetFirstChild<CheckBox>() != null)
-                    {
-                        var isChecked = token.Value<bool>();
-                        var val = isChecked ? "☒" : "☐";
-
-                        SetSingleText(sdt, val);
-                    }
-                    else if (token.Type == JTokenType.String && sdt.SdtProperties?.GetFirstChild<SdtContentDropDownList>() != null)
-                    {
-                        SetSingleText(sdt, token.ToString());
-                    }
-                    else if (token.Type == JTokenType.Array)
-                    {
-                        var prototype = sdt.CloneNode(true);
-                        var parent = sdt.Parent;
-                        sdt.Remove();
-
-                        foreach (var obj in token)
-                        {
-                            var newSdt = (SdtElement)prototype.CloneNode(true);
-                            var objFields = (JObject)obj;
-
-                            foreach (var innerSdt in newSdt.Descendants<SdtElement>())
-                            {
-                                var innerTag = innerSdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
-                                if (!string.IsNullOrWhiteSpace(innerTag) && objFields.ContainsKey(innerTag))
-                                {
-                                    SetSingleText(innerSdt, objFields[innerTag]?.ToString());
-                                }
-                            }
-
-                            parent.AppendChild(newSdt);
-                        }
-                    }
-                }
-
+                PopulateSdtElements(body, payload);
                 doc.Save();
             }
 
             File.Copy(tempFile, outputPath, true);
             File.Delete(tempFile);
+        }
+
+        private static void PopulateSdtElements(OpenXmlElement parent, JObject payload)
+        {
+            var sdtElements = parent.Descendants<SdtElement>().ToList();
+
+            foreach (var sdt in sdtElements)
+            {
+                var tag = sdt.SdtProperties?.GetFirstChild<Tag>()?.Val?.Value;
+                if (string.IsNullOrWhiteSpace(tag) || !payload.ContainsKey(tag)) continue;
+
+                var token = payload[tag];
+
+                if (token.Type == JTokenType.String || token.Type == JTokenType.Integer)
+                {
+                    SetSingleText(sdt, token.ToString());
+                }
+                else if (token.Type == JTokenType.Boolean && sdt.SdtProperties.GetFirstChild<CheckBox>() != null)
+                {
+                    var isChecked = token.Value<bool>();
+                    var val = isChecked ? "☒" : "☐";
+                    SetSingleText(sdt, val);
+                }
+                else if (token.Type == JTokenType.String && sdt.SdtProperties?.GetFirstChild<SdtContentDropDownList>() != null)
+                {
+                    SetSingleText(sdt, token.ToString());
+                }
+                else if (token.Type == JTokenType.Array)
+                {
+                    var prototype = sdt.CloneNode(true);
+                    var parentElement = sdt.Parent;
+                    sdt.Remove();
+
+                    foreach (var obj in token)
+                    {
+                        var newSdt = (SdtElement)prototype.CloneNode(true);
+                        if (obj is JObject objFields)
+                        {
+                            // Recursively fill nested SDTs
+                            PopulateSdtElements(newSdt, objFields);
+                        }
+                        parentElement.AppendChild(newSdt);
+                    }
+                }
+            }
         }
 
         // Helper method to set only the first <Text> and clear the rest
