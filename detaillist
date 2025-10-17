@@ -17,6 +17,13 @@ interface DownloadProgress {
   status: string;
 }
 
+// Global cancel flag
+let cancelDownload = false;
+
+export const setCancelDownload = (value: boolean) => {
+  cancelDownload = value;
+};
+
 // Optimized download function with chunking and progress tracking
 export const downloadFilesOptimized = async (
   selection: any,
@@ -25,23 +32,28 @@ export const downloadFilesOptimized = async (
   toastBottomCenter: any,
   showToastMessage: any,
   hideToastMessage: any,
+  updateToastMessage: any,
   siteRelativeUrl: string,
   DOCUMENT_LIBRARY: string
 ) => {
+  cancelDownload = false; // Reset cancel flag
+  
   try {
+    // Show initial toast with cancel button
     showToastMessage(
       "Preparing download...",
       "Analyzing files and folders...",
       loaderToastBottomCenter,
       "info",
-      true
+      true,
+      true // Show cancel button
     );
 
     const selectedItems: any = selection.getSelection();
 
     // Single file download - direct download without zip
     if (selectedItems.length === 1 && selectedItems[0].Type === "File") {
-      await downloadFileDirect(selectedItems[0], toastBottomCenter, showToastMessage);
+      await downloadFileDirect(selectedItems[0], toastBottomCenter, showToastMessage, updateToastMessage, loaderToastBottomCenter);
       selection.setAllSelected(false);
       setSelectedItems([]);
       hideToastMessage(loaderToastBottomCenter);
@@ -54,28 +66,42 @@ export const downloadFilesOptimized = async (
       siteRelativeUrl,
       DOCUMENT_LIBRARY,
       loaderToastBottomCenter,
-      showToastMessage
+      updateToastMessage
     );
 
-    if (allFiles.length === 0) {
-      showToastMessage("No files to download", "The selected items contain no files.", toastBottomCenter, "warning");
+    if (cancelDownload) {
       hideToastMessage(loaderToastBottomCenter);
+      showToastMessage("Download cancelled", "The download was cancelled by user.", toastBottomCenter, "warning");
+      selection.setAllSelected(false);
+      setSelectedItems([]);
+      return;
+    }
+
+    if (allFiles.length === 0) {
+      hideToastMessage(loaderToastBottomCenter);
+      showToastMessage("No files to download", "The selected items contain no files.", toastBottomCenter, "warning");
       return;
     }
 
     // Split files into multiple zips if necessary
     const zipGroups = splitIntoZipGroups(allFiles);
 
-    showToastMessage(
+    updateToastMessage(
       "Downloading files...",
       `Preparing ${zipGroups.length} zip file(s) with ${allFiles.length} total files...`,
-      loaderToastBottomCenter,
-      "info",
-      true
+      loaderToastBottomCenter
     );
 
     // Download each zip group
     for (let i = 0; i < zipGroups.length; i++) {
+      if (cancelDownload) {
+        hideToastMessage(loaderToastBottomCenter);
+        showToastMessage("Download cancelled", "The download was cancelled by user.", toastBottomCenter, "warning");
+        selection.setAllSelected(false);
+        setSelectedItems([]);
+        return;
+      }
+
       await createAndDownloadZip(
         zipGroups[i],
         i,
@@ -83,7 +109,7 @@ export const downloadFilesOptimized = async (
         allFiles.length,
         loaderToastBottomCenter,
         toastBottomCenter,
-        showToastMessage,
+        updateToastMessage,
         siteRelativeUrl
       );
     }
@@ -101,19 +127,37 @@ export const downloadFilesOptimized = async (
   } catch (error) {
     console.error("Error downloading files:", error);
     hideToastMessage(loaderToastBottomCenter);
-    showToastMessage(
-      "Download failed",
-      error.message || "An error occurred during download",
-      toastBottomCenter,
-      "error"
-    );
+    
+    if (cancelDownload) {
+      showToastMessage("Download cancelled", "The download was cancelled by user.", toastBottomCenter, "warning");
+    } else {
+      showToastMessage(
+        "Download failed",
+        error.message || "An error occurred during download",
+        toastBottomCenter,
+        "error"
+      );
+    }
   }
 };
 
 // Direct file download without creating zip
-const downloadFileDirect = async (file: any, toastBottomCenter: any, showToastMessage: any) => {
+const downloadFileDirect = async (
+  file: any,
+  toastBottomCenter: any,
+  showToastMessage: any,
+  updateToastMessage: any,
+  loaderToastBottomCenter: any
+) => {
   try {
+    updateToastMessage("Downloading file...", `Downloading ${file.name}...`, loaderToastBottomCenter);
+    
     const fileBlob = await sp.web.getFileByServerRelativeUrl(file.Url).getBlob();
+    
+    if (cancelDownload) {
+      throw new Error("Download cancelled");
+    }
+    
     const link = document.createElement("a");
     link.href = URL.createObjectURL(fileBlob);
     link.download = file.name;
@@ -127,7 +171,9 @@ const downloadFileDirect = async (file: any, toastBottomCenter: any, showToastMe
     showToastMessage("Download started", `Downloading ${file.name}...`, toastBottomCenter, "success");
   } catch (error) {
     console.error(`Failed to download ${file.name}:`, error);
-    showToastMessage(`Failed to download ${file.name}`, "", toastBottomCenter, "error");
+    if (!cancelDownload) {
+      showToastMessage(`Failed to download ${file.name}`, "", toastBottomCenter, "error");
+    }
     throw error;
   }
 };
@@ -138,12 +184,16 @@ const collectAllFiles = async (
   siteRelativeUrl: string,
   DOCUMENT_LIBRARY: string,
   loaderToastBottomCenter: any,
-  showToastMessage: any
+  updateToastMessage: any
 ): Promise<any[]> => {
   const allFiles: any[] = [];
   const processed = new Set<string>();
 
   for (const item of selectedItems) {
+    if (cancelDownload) {
+      throw new Error("Download cancelled");
+    }
+
     if (item.Type === "File") {
       if (!processed.has(item.Url)) {
         allFiles.push({
@@ -154,19 +204,21 @@ const collectAllFiles = async (
         processed.add(item.Url);
       }
     } else {
-      showToastMessage(
+      updateToastMessage(
         "Scanning folder...",
-        `Scanning ${item.name}...`,
-        loaderToastBottomCenter,
-        "info",
-        true
+        `Scanning ${item.name}... (${allFiles.length} files found so far)`,
+        loaderToastBottomCenter
       );
+      
       const folderFiles = await collectFolderFilesOptimized(
         item.Url,
         item.name,
         siteRelativeUrl,
         DOCUMENT_LIBRARY,
-        processed
+        processed,
+        "",
+        loaderToastBottomCenter,
+        updateToastMessage
       );
       allFiles.push(...folderFiles);
     }
@@ -182,7 +234,9 @@ const collectFolderFilesOptimized = async (
   siteRelativeUrl: string,
   DOCUMENT_LIBRARY: string,
   processed: Set<string>,
-  basePath: string = ""
+  basePath: string = "",
+  loaderToastBottomCenter: any = null,
+  updateToastMessage: any = null
 ): Promise<any[]> => {
   const files: any[] = [];
   const currentPath = basePath ? `${basePath}/${folderName}` : folderName;
@@ -193,10 +247,14 @@ const collectFolderFilesOptimized = async (
       : `${siteRelativeUrl}/${DOCUMENT_LIBRARY}/${folderUrl}`;
 
     // Use batched CAML query to get items efficiently
-    let position: string | null = null;
-    let hasMore = true;
+    let pagingInfo: string | null = null;
+    let batchCount = 0;
 
-    while (hasMore) {
+    while (true) {
+      if (cancelDownload) {
+        throw new Error("Download cancelled");
+      }
+
       const ViewXml = `
         <View Scope="RecursiveAll">
           <ViewFields>
@@ -222,38 +280,54 @@ const collectFolderFilesOptimized = async (
         .renderListDataAsStream({
           FolderServerRelativeUrl: folderRelativeUrl,
           ViewXml: ViewXml,
-          Paging: position,
+          Paging: pagingInfo ? pagingInfo.replace("?", "") : null,
           RenderOptions: 2
         });
 
-      // Process files from this batch
-      for (const item of result.Row) {
-        if (item.FSObjType === "0" && !processed.has(item.FileRef)) {
-          // Calculate relative path within the zip
-          const itemPath = item.FileDirRef.replace(folderRelativeUrl, "").replace(/^\//, "");
-          const fullPath = itemPath ? `${currentPath}/${itemPath}` : currentPath;
+      batchCount++;
 
-          files.push({
-            url: item.FileRef,
-            name: item.FileLeafRef,
-            path: fullPath
-          });
-          processed.add(item.FileRef);
+      // Process files from this batch
+      if (result.Row && result.Row.length > 0) {
+        for (const item of result.Row) {
+          if (item.FSObjType === "0" && !processed.has(item.FileRef)) {
+            // Calculate relative path within the zip
+            const itemPath = item.FileDirRef.replace(folderRelativeUrl, "").replace(/^\//, "");
+            const fullPath = itemPath ? `${currentPath}/${itemPath}` : currentPath;
+
+            files.push({
+              url: item.FileRef,
+              name: item.FileLeafRef,
+              path: fullPath
+            });
+            processed.add(item.FileRef);
+          }
+        }
+
+        if (updateToastMessage && loaderToastBottomCenter) {
+          updateToastMessage(
+            "Scanning folder...",
+            `Found ${files.length} files in ${folderName}... (Batch ${batchCount})`,
+            loaderToastBottomCenter
+          );
         }
       }
 
-      // Check if there are more items
-      position = result.NextHref || null;
-      hasMore = !!position;
-
-      // Small delay to avoid throttling
-      if (hasMore) {
+      // Check if there are more items - FIXED: properly check NextHref
+      if (result.NextHref && result.NextHref.trim() !== "") {
+        pagingInfo = result.NextHref;
+        
+        // Small delay to avoid throttling
         await new Promise(resolve => setTimeout(resolve, 100));
+      } else {
+        // No more pages, exit loop
+        break;
       }
     }
   } catch (error) {
     console.error(`Error collecting files from folder ${folderName}:`, error);
-    throw error;
+    if (!cancelDownload) {
+      throw error;
+    }
   }
 
   return files;
@@ -266,7 +340,6 @@ const splitIntoZipGroups = (files: any[]): any[][] => {
   let currentSize = 0;
 
   for (const file of files) {
-    // Estimate file size (we'll check actual size during download)
     // Add to current group if under limits
     if (currentGroup.length >= MAX_FILES_PER_ZIP || currentSize >= MAX_ZIP_SIZE * 0.8) {
       if (currentGroup.length > 0) {
@@ -294,7 +367,7 @@ const createAndDownloadZip = async (
   totalFiles: number,
   loaderToastBottomCenter: any,
   toastBottomCenter: any,
-  showToastMessage: any,
+  updateToastMessage: any,
   siteRelativeUrl: string
 ) => {
   const zip = new JSZip();
@@ -303,14 +376,16 @@ const createAndDownloadZip = async (
   try {
     // Process files in batches to avoid memory issues
     for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      if (cancelDownload) {
+        throw new Error("Download cancelled");
+      }
+
       const batch = files.slice(i, i + BATCH_SIZE);
 
-      showToastMessage(
+      updateToastMessage(
         `Creating zip ${zipIndex + 1}/${totalZips}...`,
         `Processing files ${processedCount + 1}-${Math.min(processedCount + batch.length, files.length)} of ${files.length}...`,
-        loaderToastBottomCenter,
-        "info",
-        true
+        loaderToastBottomCenter
       );
 
       // Download files in parallel within batch
@@ -332,39 +407,35 @@ const createAndDownloadZip = async (
       await new Promise(resolve => setTimeout(resolve, 200));
     }
 
+    if (cancelDownload) {
+      throw new Error("Download cancelled");
+    }
+
     // Generate and download zip
-    showToastMessage(
+    updateToastMessage(
       `Generating zip ${zipIndex + 1}/${totalZips}...`,
       "Compressing files, please wait...",
-      loaderToastBottomCenter,
-      "info",
-      true
+      loaderToastBottomCenter
     );
 
     const zipBlob = await zip.generateAsync(
       { type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } },
       (metadata) => {
+        if (cancelDownload) {
+          throw new Error("Download cancelled");
+        }
         // Progress callback during zip generation
         const percent = metadata.percent.toFixed(0);
-        showToastMessage(
+        updateToastMessage(
           `Generating zip ${zipIndex + 1}/${totalZips}...`,
           `Compression progress: ${percent}%`,
-          loaderToastBottomCenter,
-          "info",
-          true
+          loaderToastBottomCenter
         );
       }
     );
 
     const zipFileName = totalZips > 1 ? `Documents_Part${zipIndex + 1}.zip` : "Documents.zip";
     saveAs(zipBlob, zipFileName);
-
-    showToastMessage(
-      `Zip ${zipIndex + 1}/${totalZips} ready`,
-      `${zipFileName} is downloading...`,
-      toastBottomCenter,
-      "success"
-    );
 
     // Clear zip from memory
     zip.remove(/.*/);
@@ -374,7 +445,7 @@ const createAndDownloadZip = async (
   }
 };
 
-// Updated addFolderToZip function (for backward compatibility, but not used in optimized flow)
+// Updated addFolderToZip function (for backward compatibility)
 export const addFolderToZipOptimized = async (
   zip: any,
   folderUrl: any,
@@ -382,10 +453,6 @@ export const addFolderToZipOptimized = async (
   siteRelativeUrl: string,
   DOCUMENT_LIBRARY: string
 ) => {
-  const folderNameUrl = folderUrl.includes(siteRelativeUrl)
-    ? folderUrl
-    : `${siteRelativeUrl}/${DOCUMENT_LIBRARY}/${folderUrl}`;
-
   // Use the optimized collection method
   const files = await collectFolderFilesOptimized(
     folderUrl,
@@ -397,6 +464,10 @@ export const addFolderToZipOptimized = async (
 
   // Add files to zip in batches
   for (let i = 0; i < files.length; i += BATCH_SIZE) {
+    if (cancelDownload) {
+      throw new Error("Download cancelled");
+    }
+
     const batch = files.slice(i, i + BATCH_SIZE);
     const batchPromises = batch.map(async (file) => {
       try {
@@ -416,18 +487,161 @@ export const addFolderToZipOptimized = async (
   }
 };
 
-// Example usage in your component:
-// Replace your existing downloadFiles function with:
-// 
-// const downloadFiles = async () => {
-//   await downloadFilesOptimized(
-//     selection,
-//     setSelectedItems,
-//     loaderToastBottomCenter,
-//     toastBottomCenter,
-//     showToastMessage,
-//     hideToastMessage,
-//     siteRelativeUrl,
-//     DOCUMENT_LIBRARY
-//   );
-// };
+
+
+
+
+// Add this to your DocumentLibrary component imports
+import { downloadFilesOptimized, setCancelDownload } from './DownloadHelpers';
+
+// In your DocumentLibrary component, update these functions:
+
+// Add this helper function to update toast messages
+const updateToastMessage = (summary: string, detail: string, ref: any) => {
+  if (ref.current) {
+    // Clear existing and show new
+    ref.current.clear();
+    ref.current.show({ 
+      severity: 'info', 
+      summary: summary, 
+      detail: detail, 
+      life: 3000, 
+      sticky: true,
+      content: (props) => (
+        <section className="toast-message-container">
+          <div className="toast-message-content">
+            <p className="toast-message-summary">{summary}</p>
+            <p className="toast-message-detail">{detail}</p>
+            <div className="toast-progress-wrapper">
+              <ProgressBar mode="indeterminate" className="toast-progress-bar" />
+            </div>
+            <button 
+              className="toast-cancel-button"
+              onClick={() => {
+                setCancelDownload(true);
+                hideToastMessage(ref);
+              }}
+              style={{
+                marginTop: '8px',
+                padding: '6px 12px',
+                background: '#d13438',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '13px',
+                fontWeight: '500'
+              }}
+            >
+              Cancel Download
+            </button>
+          </div>
+        </section>
+      )
+    });
+  }
+};
+
+// Update the showToastMessage function to support cancel button
+const showToastMessage = (label: string, detail: string, ref: any, severity: string, isSticky = false, showCancel = false) => {
+  if (showCancel) {
+    ref.current.show({ 
+      severity: severity, 
+      summary: label, 
+      detail: detail, 
+      life: 3000, 
+      sticky: isSticky,
+      content: (props) => (
+        <section className="toast-message-container">
+          <div className="toast-message-content">
+            <p className="toast-message-summary">{label}</p>
+            <p className="toast-message-detail">{detail}</p>
+            <div className="toast-progress-wrapper">
+              <ProgressBar mode="indeterminate" className="toast-progress-bar" />
+            </div>
+            <button 
+              className="toast-cancel-button"
+              onClick={() => {
+                setCancelDownload(true);
+                hideToastMessage(ref);
+              }}
+              style={{
+                marginTop: '8px',
+                padding: '6px 12px',
+                background: '#d13438',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '13px',
+                fontWeight: '500'
+              }}
+            >
+              Cancel Download
+            </button>
+          </div>
+        </section>
+      )
+    });
+  } else {
+    ref.current.show({ severity: severity, summary: label, detail: detail, life: 3000, sticky: isSticky});
+  }
+};
+
+// Replace your downloadFiles function with this:
+const downloadFiles = async () => {
+  await downloadFilesOptimized(
+    selection,
+    setSelectedItems,
+    loaderToastBottomCenter,
+    toastBottomCenter,
+    showToastMessage,
+    hideToastMessage,
+    updateToastMessage,
+    siteRelativeUrl,
+    DOCUMENT_LIBRARY
+  );
+};
+
+// Optional: Add CSS for better toast styling
+const toastStyles = `
+.toast-message-container {
+  min-width: 300px;
+  max-width: 500px;
+}
+
+.toast-message-content {
+  padding: 12px;
+}
+
+.toast-message-summary {
+  font-weight: 600;
+  font-size: 14px;
+  margin: 0 0 6px 0;
+  color: #323130;
+}
+
+.toast-message-detail {
+  font-size: 13px;
+  margin: 0 0 8px 0;
+  color: #605e5c;
+}
+
+.toast-progress-wrapper {
+  margin: 8px 0;
+}
+
+.toast-progress-bar {
+  height: 4px;
+}
+
+.toast-cancel-button:hover {
+  background: #a4262c !important;
+}
+
+.toast-cancel-button:active {
+  background: #8a1f23 !important;
+}
+`;
+
+// Add the styles to your component or global stylesheet
