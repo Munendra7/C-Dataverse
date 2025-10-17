@@ -1,46 +1,30 @@
-const downloadFiles = async () => {
+  const downloadFiles = async () => {
+    //setIsLoading(true);
     try{
-      showToastMessage("Preparing download...", "Analyzing files and folders...", loaderToastBottomCenter, 'info', true);
+      showToastMessage("Preparing download...", "Please wait while we prepare your download.", loaderToastBottomCenter, 'info', true);
       const selectedItems: any = selection.getSelection();
-      
-      // Single file download - direct download without zipping
       if (selectedItems.length === 1 && selectedItems[0].Type === "File") {
         await downloadFile(selectedItems[0]);
-        hideToastMessage(loaderToastBottomCenter);
-        showToastMessage("Downloaded successfully", "", toastBottomCenter, 'success');
         selection.setAllSelected(false);
         setSelectedItems([]);
+        hideToastMessage(loaderToastBottomCenter);
         return;
       }
-
-      // Calculate total size and item count
-      let totalSize = 0;
-      let totalFiles = 0;
-      const itemsToProcess: any[] = [];
-
-      for (const item of selectedItems) {
+      const zip = new JSZip();
+      const downloadPromises = selectedItems.map(async (item: any) => {
         if (item.Type === "File") {
-          totalFiles++;
-          itemsToProcess.push({ item, isFile: true });
+          const fileBlob = await sp.web.getFileByServerRelativeUrl(`${item.Url}`).getBlob();
+          zip.file(item.name, fileBlob);
         } else {
-          // For folders, estimate size by recursively counting items
-          const folderStats = await getFolderStats(item.Url);
-          totalFiles += folderStats.fileCount;
-          totalSize += folderStats.estimatedSize;
-          itemsToProcess.push({ item, isFile: false, stats: folderStats });
+          await addFolderToZip(zip, item.Url, item.name);
         }
-      }
-
-      // If total is manageable, create single zip
-      if (totalSize < MAX_ZIP_SIZE && totalFiles < 5000) {
-        await createSingleZip(itemsToProcess, selectedItems);
-      } else {
-        // Split into multiple zips
-        await createMultipleZips(itemsToProcess, totalFiles);
-      }
-
+      });
+      await Promise.all(downloadPromises);
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      saveAs(zipBlob, "Documents.zip");
+      //setIsLoading(false);
+      showToastMessage("Downloaded successfully", "", toastBottomCenter, 'success');
       hideToastMessage(loaderToastBottomCenter);
-      showToastMessage(`Download complete! ${totalFiles} file(s) downloaded.`, "", toastBottomCenter, 'success');
       selection.setAllSelected(false);
       setSelectedItems([]);
     } catch (error) {
@@ -51,204 +35,36 @@ const downloadFiles = async () => {
     }
   };
 
-  const getFolderStats = async (folderUrl: string) => {
+  const downloadFile = async (file: any) => {
+    try {
+      const fileBlob = await sp.web.getFileByServerRelativeUrl(file.Url).getBlob();
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(fileBlob);
+      link.download = file.name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setIsLoading(false);
+    } catch (error) {
+      console.error(`Failed to download ${file.name}:`, error);
+      showToastMessage(`Failed to download ${file.name}`, "", toastBottomCenter, 'error');
+    }
+  }
+
+  const addFolderToZip = async (zip: any, folderUrl: any, folderName: any) => {
     const folderNameUrl = folderUrl.includes(siteRelativeUrl) ? folderUrl : `${siteRelativeUrl}/${DOCUMENT_LIBRARY}/${folderUrl}`;
-    
-    let fileCount = 0;
-    let estimatedSize = 0;
-    const foldersToProcess = [folderNameUrl];
-    const processedFolders = new Set();
+    const folder = sp.web.getFolderByServerRelativeUrl(`${folderNameUrl}`);
+    const files = await folder.files();
+    const subfolders = await folder.folders();
 
-    while (foldersToProcess.length > 0) {
-      const currentFolder = foldersToProcess.pop();
-      if (!currentFolder || processedFolders.has(currentFolder)) continue;
-      processedFolders.add(currentFolder);
-
-      try {
-        const folder = sp.web.getFolderByServerRelativeUrl(currentFolder);
-        const [files, subfolders] = await Promise.all([
-          folder.files.select("Name", "Length").top(5000)(),
-          folder.folders.select("Name", "ServerRelativeUrl").top(5000)()
-        ]);
-
-        fileCount += files.length;
-        estimatedSize += files.reduce((sum: number, f: any) => sum + (f.Length || 0), 0);
-
-        // Add subfolders to queue
-        subfolders.forEach((sf: any) => foldersToProcess.push(sf.ServerRelativeUrl));
-      } catch (error) {
-        console.error(`Error getting stats for folder ${currentFolder}:`, error);
-      }
-    }
-
-    return { fileCount, estimatedSize };
-  };
-
-  const createSingleZip = async (itemsToProcess: any[], selectedItems: any[]) => {
-    const zip = new JSZip();
-    let processedFiles = 0;
-    let totalEstimatedFiles = itemsToProcess.reduce((sum, item) => 
-      sum + (item.isFile ? 1 : (item.stats?.fileCount || 0)), 0);
-
-    for (const { item, isFile } of itemsToProcess) {
-      if (isFile) {
-        showToastMessage("Downloading...", `Processing file ${processedFiles + 1} of ${totalEstimatedFiles}`, loaderToastBottomCenter, 'info', true);
-        const fileBlob = await sp.web.getFileByServerRelativeUrl(`${item.Url}`).getBlob();
-        zip.file(item.name, fileBlob);
-        processedFiles++;
-      } else {
-        await addFolderToZipOptimized(zip, item.Url, item.name, (current, total) => {
-          showToastMessage("Downloading...", `Processing file ${current} of ${total}`, loaderToastBottomCenter, 'info', true);
-        });
-      }
-    }
-
-    showToastMessage("Creating zip file...", "This may take a moment...", loaderToastBottomCenter, 'info', true);
-    const zipBlob = await zip.generateAsync({ 
-      type: "blob",
-      streamFiles: true,
-      compression: "DEFLATE",
-      compressionOptions: { level: 6 }
-    }, (metadata) => {
-      const progress = metadata.percent.toFixed(0);
-      showToastMessage("Creating zip file...", `${progress}% complete`, loaderToastBottomCenter, 'info', true);
-    });
-    
-    saveAs(zipBlob, "Documents.zip");
-  };
-
-  const createMultipleZips = async (itemsToProcess: any[], totalFiles: number) => {
-    let zipIndex = 1;
-    let currentZip = new JSZip();
-    let currentZipSize = 0;
-    let currentZipFiles = 0;
-    let processedFiles = 0;
-
-    const saveCurrentZip = async () => {
-      if (currentZipFiles > 0) {
-        showToastMessage("Creating zip file...", `Finalizing part ${zipIndex}...`, loaderToastBottomCenter, 'info', true);
-        const zipBlob = await currentZip.generateAsync({ 
-          type: "blob",
-          streamFiles: true,
-          compression: "DEFLATE",
-          compressionOptions: { level: 6 }
-        });
-        saveAs(zipBlob, `Documents_Part${zipIndex}.zip`);
-        zipIndex++;
-        currentZip = new JSZip();
-        currentZipSize = 0;
-        currentZipFiles = 0;
-      }
-    };
-
-    for (const { item, isFile } of itemsToProcess) {
-      if (isFile) {
-        showToastMessage("Downloading...", `Processing file ${processedFiles + 1} of ${totalFiles}`, loaderToastBottomCenter, 'info', true);
-        const fileBlob = await sp.web.getFileByServerRelativeUrl(`${item.Url}`).getBlob();
-        
-        // Check if adding this file would exceed limits
-        if (currentZipFiles >= 4000 || (currentZipSize + fileBlob.size) > MAX_ZIP_SIZE) {
-          await saveCurrentZip();
-        }
-        
-        currentZip.file(item.name, fileBlob);
-        currentZipSize += fileBlob.size;
-        currentZipFiles++;
-        processedFiles++;
-      } else {
-        await addFolderToZipOptimized(currentZip, item.Url, item.name, async (current, total, fileBlob) => {
-          showToastMessage("Downloading...", `Processing file ${current} of ${total}`, loaderToastBottomCenter, 'info', true);
-          
-          // Check if we need to split to new zip
-          if (currentZipFiles >= 4000 || (currentZipSize + (fileBlob?.size || 0)) > MAX_ZIP_SIZE) {
-            await saveCurrentZip();
-          }
-          
-          if (fileBlob) {
-            currentZipSize += fileBlob.size;
-            currentZipFiles++;
-          }
-        });
-      }
-    }
-
-    // Save the last zip if it has content
-    await saveCurrentZip();
-  };
-
-  const addFolderToZipOptimized = async (zip: any, folderUrl: any, folderName: any, progressCallback?: (current: number, total: number, fileBlob?: Blob) => void | Promise<void>) => {
-    const folderNameUrl = folderUrl.includes(siteRelativeUrl) ? folderUrl : `${siteRelativeUrl}/${DOCUMENT_LIBRARY}/${folderUrl}`;
-    
     const folderZip = zip.folder(folderName);
-    let processedCount = 0;
-    let totalCount = 0;
+    const filePromises = files.map(async (file: any) => {
+      const fileBlob = await sp.web.getFileByServerRelativeUrl(file.ServerRelativeUrl).getBlob();
+      folderZip.file(file.Name, fileBlob);
+    });
+    const subfolderPromises = subfolders.map(async (subfolder: any) => {
+      await addFolderToZip(folderZip, subfolder.ServerRelativeUrl, subfolder.Name);
+    });
 
-    // Use a queue-based approach to handle large folder structures
-    const foldersToProcess: Array<{ url: string, zipFolder: any, path: string }> = [
-      { url: folderNameUrl, zipFolder: folderZip, path: '' }
-    ];
-    const processedFolders = new Set<string>();
-
-    while (foldersToProcess.length > 0) {
-      const { url: currentFolderUrl, zipFolder: currentZipFolder } = foldersToProcess.shift()!;
-      
-      if (processedFolders.has(currentFolderUrl)) continue;
-      processedFolders.add(currentFolderUrl);
-
-      try {
-        const folder = sp.web.getFolderByServerRelativeUrl(currentFolderUrl);
-        
-        // Process in batches to avoid memory issues
-        const batchSize = 100;
-        let skip = 0;
-        let hasMore = true;
-
-        while (hasMore) {
-          const files = await folder.files.select("Name", "ServerRelativeUrl", "Length").top(batchSize).skip(skip)();
-          
-          if (files.length === 0) {
-            hasMore = false;
-            break;
-          }
-
-          // Process files in smaller chunks to release memory
-          for (const file of files) {
-            try {
-              const fileBlob = await sp.web.getFileByServerRelativeUrl(file.ServerRelativeUrl).getBlob();
-              currentZipFolder.file(file.Name, fileBlob);
-              processedCount++;
-              
-              if (progressCallback) {
-                await progressCallback(processedCount, totalCount, fileBlob);
-              }
-              
-              // Allow garbage collection
-              await new Promise(resolve => setTimeout(resolve, 0));
-            } catch (error) {
-              console.error(`Failed to download file ${file.Name}:`, error);
-            }
-          }
-
-          skip += batchSize;
-          if (files.length < batchSize) {
-            hasMore = false;
-          }
-        }
-
-        // Get subfolders (also in batches if needed)
-        const subfolders = await folder.folders.select("Name", "ServerRelativeUrl").top(1000)();
-        
-        for (const subfolder of subfolders) {
-          const subFolderZip = currentZipFolder.folder(subfolder.Name);
-          foldersToProcess.push({
-            url: subfolder.ServerRelativeUrl,
-            zipFolder: subFolderZip,
-            path: subfolder.Name
-          });
-        }
-
-      } catch (error) {
-        console.error(`Error processing folder ${currentFolderUrl}:`, error);
-      }
-    }
+    await Promise.all([...filePromises, ...subfolderPromises]);
   };
