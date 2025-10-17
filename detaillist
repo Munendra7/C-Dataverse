@@ -1,792 +1,433 @@
 import * as React from "react";
 import { sp } from "@pnp/sp/presets/all";
-import { Spinner, MessageBar, Selection, MessageBarType, IBreadcrumbItem, PrimaryButton } from "@fluentui/react";
-import JSZip, { folder } from "jszip";
+import JSZip from "jszip";
 import { saveAs } from "file-saver";
-import Breadcrumbs from "./Breadcrumbs";
-import DocumentCommandBar from "./CommandBar";
-import DocumentDetailsList from "./DetailsList";
-import DocumentDialogs from "./Dialogs";
-import VersionHistoryPanel from "./VersionHistoryPanel";
-import { useInView } from "react-intersection-observer";
-import { useEffect, useRef } from "react";
-import { Toast } from 'primereact/toast';
-import { ProgressBar } from 'primereact/progressbar';
 
-let DOCUMENT_LIBRARY = "";
+// Constants for optimization
+const MAX_ZIP_SIZE = 500 * 1024 * 1024; // 500MB per zip
+const MAX_FILES_PER_ZIP = 1000; // Limit files per zip
+const BATCH_SIZE = 50; // Process files in batches to avoid memory issues
+const LIST_THRESHOLD_BATCH = 4000; // Stay under 5000 item threshold
 
-const DocumentLibrary: React.FC = () => {
-  const [items, setItems] = React.useState<any[]>([]);
-  const [selectedItems, setSelectedItems] = React.useState<any>([]);
-  const [versions, setVersions] = React.useState([]);
-  const [breadcrumbs, setBreadcrumbs] = React.useState<IBreadcrumbItem[]>([]);
-  const [folderName, setFolderName] = React.useState("");
-  const [isLoading, setIsLoading] = React.useState(true);
-  const queryParameters = new URLSearchParams(window.location.search)
-  const url: any = queryParameters.get("url")
-  const [errorMessage, setErrorMessage] = React.useState("");
-  const [actionType, setActionType] = React.useState('rename');
-  const [isVersionPanelOpen, setVersionPanelOpen] = React.useState(false);
-  const [isPanelOpen, setPanelOpen] = React.useState(false);
-  const [newName, setNewName] = React.useState("");
-  const [forceUpdate, setForceUpdate] = React.useState(0);
-  const [permissions, setPermissions] = React.useState({ CanUpload: false, canRename: false, canDownload: false, canViewVersionHistory: false, canDelete: false });
-  const [siteRelativeUrl, setsiteRelativeUrl] = React.useState<string>("");
-  const [restrictedFolders, setRestrictedFolder] = React.useState<any>([]);
-  const [permissionGroupName, setPermissionGroupName] = React.useState<string>("");
-  const [hasMoreItems, setHasMoreItems] = React.useState(true);
-  const [searchKeyword, setSearchKeyword] = React.useState<string>("");
+interface DownloadProgress {
+  totalFiles: number;
+  processedFiles: number;
+  currentZip: number;
+  totalZips: number;
+  status: string;
+}
 
-  const pagingInfoRef = useRef<string | null>(null);
-  const folderNameRef = useRef<string | null>("");
+// Optimized download function with chunking and progress tracking
+export const downloadFilesOptimized = async (
+  selection: any,
+  setSelectedItems: any,
+  loaderToastBottomCenter: any,
+  toastBottomCenter: any,
+  showToastMessage: any,
+  hideToastMessage: any,
+  siteRelativeUrl: string,
+  DOCUMENT_LIBRARY: string
+) => {
+  try {
+    showToastMessage(
+      "Preparing download...",
+      "Analyzing files and folders...",
+      loaderToastBottomCenter,
+      "info",
+      true
+    );
 
-  const MAX_ZIP_SIZE = 500 * 1024 * 1024; // 500MB
+    const selectedItems: any = selection.getSelection();
 
-  const { ref, inView } = useInView({
-    threshold: 0,
-  });
-
-  const toastBottomCenter = useRef(null);
-  const loaderToastBottomCenter = useRef(null);
-
-  const selection = React.useMemo(() => new Selection({
-    onSelectionChanged: () => {
-      setSelectedItems(selection.getSelection());
-      setForceUpdate((prev) => prev + 1);
+    // Single file download - direct download without zip
+    if (selectedItems.length === 1 && selectedItems[0].Type === "File") {
+      await downloadFileDirect(selectedItems[0], toastBottomCenter, showToastMessage);
+      selection.setAllSelected(false);
+      setSelectedItems([]);
+      hideToastMessage(loaderToastBottomCenter);
+      return;
     }
-  }), []);
 
-  useEffect(() => {
-    (async () => {
-      if (siteRelativeUrl) {
-        if (url != null && url != "") {
-          fetchFilesAndFolders(url);
-        } else {
-          fetchFilesAndFolders("");
-        }
-        checkUserPermissions();
-      }
-    })();
-  }, [siteRelativeUrl]);
+    // Collect all files from selected items
+    const allFiles = await collectAllFiles(
+      selectedItems,
+      siteRelativeUrl,
+      DOCUMENT_LIBRARY,
+      loaderToastBottomCenter,
+      showToastMessage
+    );
 
-  useEffect(() => {
-    if (inView) {
-      fetchFilesAndFolders(folderName);
+    if (allFiles.length === 0) {
+      showToastMessage("No files to download", "The selected items contain no files.", toastBottomCenter, "warning");
+      hideToastMessage(loaderToastBottomCenter);
+      return;
     }
-  }, [inView]);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        await fetchConfigFolders()
-        const siteInfo = await sp.web.select("ServerRelativeUrl")();
-        setsiteRelativeUrl(siteInfo.ServerRelativeUrl);
-      } catch (error) {
-        console.log("Error fetching site Url:", error);
-      }
-    })();
-  }, []);
+    // Split files into multiple zips if necessary
+    const zipGroups = splitIntoZipGroups(allFiles);
 
-  useEffect(() => {
-    pagingInfoRef.current = null;
-    fetchFilesAndFolders(folderName);
-  }, [searchKeyword]);
+    showToastMessage(
+      "Downloading files...",
+      `Preparing ${zipGroups.length} zip file(s) with ${allFiles.length} total files...`,
+      loaderToastBottomCenter,
+      "info",
+      true
+    );
 
-  const fetchFilesAndFolders = async(folderUrl: string = "")=>{
-      if (!siteRelativeUrl) return;
-      setIsLoading(true);
-      try {
-
-        let whereClause = "";
-        let scopeAttr = "";
-        if (searchKeyword) {
-          // Use RecursiveAll only when search is active
-          scopeAttr = ' Scope="RecursiveAll"';
-          whereClause = `
-            <Where>
-              <Contains>
-                <FieldRef Name='FileLeafRef' />
-                <Value Type='Text'>${searchKeyword}</Value>
-              </Contains>
-            </Where>
-          `;
-        }
-
-        setFolderName(folderUrl);
-        folderNameRef.current = folderUrl;
-
-        const pageSize = pagingInfoRef.current ? 2000 : 500;
-
-        const folderRelativeUrl = folderUrl ? `${siteRelativeUrl}/${DOCUMENT_LIBRARY}/${folderUrl}` : `${siteRelativeUrl}/${DOCUMENT_LIBRARY}`;
-        const ViewXml = `
-          <View${scopeAttr}>
-            <ViewFields>
-              <FieldRef Name='FileLeafRef'/>
-              <FieldRef Name='FileDirRef'/>
-              <FieldRef Name='FSObjType'/>
-              <FieldRef Name='FileRef'/>
-              <FieldRef Name='File_x0020_Size'/>
-              <FieldRef Name='Modified'/>
-              <FieldRef Name='Created'/>
-              <FieldRef Name='Editor'/>
-              <FieldRef Name='File_x0020_Type'/>
-              <FieldRef Name='ItemChildCount'/>
-              <FieldRef Name='FolderChildCount'/>
-              <FieldRef Name='ID'/>
-            </ViewFields>
-            <Query>
-              ${whereClause}
-              <OrderBy>
-                <FieldRef Name='Modified' Ascending='FALSE'/>
-              </OrderBy>
-            </Query>
-            <RowLimit Paged='TRUE'>${pageSize}</RowLimit>
-          </View>
-        `;
-
-        const paging = pagingInfoRef.current ? pagingInfoRef.current.replace("?", "") : null;
-
-        const libraryItems = await sp.web.lists.getByTitle(DOCUMENT_LIBRARY)
-        .renderListDataAsStream
-          ({ 
-            FolderServerRelativeUrl: folderRelativeUrl,
-            ViewXml: ViewXml,
-            Paging: paging,
-            RenderOptions: 2
-          });
-
-        const updatedLibItems = libraryItems.Row.map((f: any) => ({
-          name: f.FileLeafRef,
-          Type: f.File_x0020_Type=="" ? "Folder": "File",
-          Url: f.File_x0020_Type=="" ? f.FileRef.split(`${siteRelativeUrl}/${DOCUMENT_LIBRARY}/`)[1] || "" : f.FileRef,
-          icon: f.File_x0020_Type=="" ? "Folder": getFileIcon(f.FileLeafRef),
-          modified: f["Modified."],
-          created: f["Created."],
-          ServerRelativeUrl: siteRelativeUrl,
-          modifiedBy: f.Editor != null && f.Editor.length>0 ? f.Editor[0].title : "Sharepoint App",
-          folderUrl: folderUrl,
-          folderChildCount: f.FolderChildCount,
-          itemChildCount: f.ItemChildCount,
-          ID: f.ID
-        }));
-
-        if(!paging){
-          selection.setAllSelected(false); // Clear selection after navigation
-          setSelectedItems([]);
-          setItems(updatedLibItems);
-          updateBreadcrumbs(folderUrl);
-        } else {
-          setItems((prev)=> [...prev, ...updatedLibItems]);
-          setSelectedItems(selection.getSelection());
-        }
-        pagingInfoRef.current = libraryItems.NextHref || null;
-        setHasMoreItems(!!libraryItems.NextHref);
-      } catch (error) {
-        setErrorMessage("Error fetching files & folders.");
-        console.error("Error:", error);
-      }
-      setIsLoading(false);
-  };
-
-  const fetchConfigFolders = async () => {
-    try {
-      const response = await sp.web.lists.getByTitle('ConfigList').items.select('Title', 'Value').get();
-      for (let item of response) {
-        if (item.Title == "RestrictedFolder") {
-          const restrictedFolders = item.Value.split(",");
-          setRestrictedFolder(restrictedFolders);
-        }
-        if (item.Title == "LibraryName") {
-          DOCUMENT_LIBRARY = item.Value;
-        }
-        if (item.Title = "PermissionGroupName") {
-          setPermissionGroupName(item.Value);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to fetch restricted folders:', error);
-      return [];
+    // Download each zip group
+    for (let i = 0; i < zipGroups.length; i++) {
+      await createAndDownloadZip(
+        zipGroups[i],
+        i,
+        zipGroups.length,
+        allFiles.length,
+        loaderToastBottomCenter,
+        toastBottomCenter,
+        showToastMessage,
+        siteRelativeUrl
+      );
     }
-  };
 
-  const showToastMessage = (label, detail, ref, severity, isSticky=false) => {
-    ref.current.show({ severity: severity, summary: label, detail: detail, life: 3000, sticky: isSticky});
-  };
-
-  const hideToastMessage = (ref) => {
-    ref.current.clear();
-  };
-
-  const getFileIcon = (fileName: string) => {
-    const ext = fileName.split(".").pop()?.toLowerCase();
-    switch (ext) {
-      case "docx":
-        return "WordDocument";
-      case "xlsx":
-        return "ExcelDocument";
-      case "xls":
-        return "ExcelDocument";
-      case "pdf":
-        return "PDF";
-      case "zip":
-        return "ZipFolder";
-      default:
-        return "Page";
-    }
-  };
-
-  const updateBreadcrumbs = (folderPath: string) => {
-    const parts = folderPath.split("/").filter((part) => part);
-    let cumulativePath = DOCUMENT_LIBRARY;
-    const crumbs: IBreadcrumbItem[] = [
-      {
-        text: "📁 " + DOCUMENT_LIBRARY,
-        key: "root",
-        onClick: () => {
-          pagingInfoRef.current = null;
-          fetchFilesAndFolders("");
-        },
-      },
-    ];
-    parts.forEach((part, index) => {
-      cumulativePath = cumulativePath ? `${cumulativePath}/${part}` : part;
-      crumbs.push({
-        text: part,
-        key: cumulativePath,
-        onClick: () => {
-          pagingInfoRef.current = null;
-          fetchFilesAndFolders(parts.slice(0, index + 1).join("/"));
-        },
-      });
-    });
-
-    setBreadcrumbs(crumbs);
-  };
-
-  //handle large file upload and chunking | then manage state for newly uploaded files
-  const uploadFile = async (files: FileList) => {
-    const allowedExtensions = ["pdf", "xlsx", "xls", "zip", "doc", "docx"];
-    const folderRelativeUrl = folderName == "" ? `${siteRelativeUrl}/${DOCUMENT_LIBRARY}` : `${siteRelativeUrl}/${DOCUMENT_LIBRARY}/${folderName}`;
-
-    showToastMessage("Uploading file(s)...", "Please wait while your file(s) are being uploaded.", loaderToastBottomCenter, 'info', true);
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const fileExtension: any = file.name.split(".").pop()?.toLowerCase();
-
-      if (!allowedExtensions.includes(fileExtension)) {
-        setErrorMessage("Only PDF, XLSX, XLS, and ZIP files are allowed.");
-        continue;
-      }
-
-      const fileName = file.name;
-      if (!fileName) continue;
-
-      try {
-        const folder = sp.web.getFolderByServerRelativePath(folderRelativeUrl);
-        await folder.files.add(fileName, file, true).then(async () => {
-          const fileViewXml = `
-            <View>
-              <Query>
-                <Where>
-                  <Eq>
-                    <FieldRef Name='FileLeafRef' />
-                    <Value Type='Text'>${fileName}</Value>
-                  </Eq>
-              </Where>
-              </Query>
-              <ViewFields>
-                <FieldRef Name='FileLeafRef'/>
-                <FieldRef Name='FileDirRef'/>
-                <FieldRef Name='FSObjType'/>
-                <FieldRef Name='FileRef'/>
-                <FieldRef Name='Modified'/>
-                <FieldRef Name='Created'/>
-                <FieldRef Name='Editor'/>
-                <FieldRef Name='ItemChildCount'/>
-                <FieldRef Name='FolderChildCount'/>
-                <FieldRef Name='ID'/>
-              </ViewFields>
-              <RowLimit>1</RowLimit>
-            </View>
-          `;
-          const fileResult = await sp.web.lists.getByTitle(DOCUMENT_LIBRARY)
-            .renderListDataAsStream({
-              FolderServerRelativeUrl: folderRelativeUrl,
-              ViewXml: fileViewXml,
-              RenderOptions: 2
-            });
-          if (fileResult.Row && fileResult.Row.length > 0) {
-            const f = fileResult.Row[0];
-            const newFile = {
-              name: f.FileLeafRef,
-              Type: "File",
-              Url: f.FileRef,
-              icon: getFileIcon(f.FileLeafRef),
-              modified: f["Modified."],
-              created: f["Created."],
-              ServerRelativeUrl: siteRelativeUrl,
-              modifiedBy: f.Editor && f.Editor.length > 0 ? f.Editor[0].title : "Sharepoint App",
-              folderUrl: folderName,
-              folderChildCount: f.FolderChildCount,
-              itemChildCount: f.ItemChildCount,
-              ID: f.ID
-            };
-            //update if file is replaced else add to current state
-            if(folderNameRef.current === folderName){
-            setItems(prev => {
-                const existingFileIndex = prev.findIndex(item => item.ID === newFile.ID);
-                if (existingFileIndex !== -1) {
-                  // File exists, replace it
-                  const updatedItems = [...prev];
-                  updatedItems[existingFileIndex] = newFile;
-                  return updatedItems;
-                }
-                // File doesn't exist, add it
-                return [newFile, ...prev];
-              });
-            }
-            setErrorMessage("");
-            //setPanelOpen(false);
-            //setNewName("");
-            showToastMessage(`File "${fileName}" uploaded successfully`, '', toastBottomCenter, 'success');
-          }
-        }).catch((error) => {
-          console.error("Error uploading file:", error);
-          setErrorMessage("Failed to upload file.");
-          showToastMessage("Failed to upload file", `Failed to upload file "${fileName}".`, toastBottomCenter, 'error');
-        });
-      } catch (error) {
-        console.error("Error uploading file:", error);
-        setErrorMessage("Failed to upload file.");
-        showToastMessage("Failed to upload file", `Failed to upload file "${fileName}".`, toastBottomCenter, 'error');
-      }
-    }
     hideToastMessage(loaderToastBottomCenter);
-    //fetchFilesAndFolders(folderName);
-  };
+    showToastMessage(
+      "Download completed!",
+      `Successfully downloaded ${allFiles.length} file(s) in ${zipGroups.length} zip(s)`,
+      toastBottomCenter,
+      "success"
+    );
 
-  const createFolder = async () => {
-    try {
-      if (restrictedFolders.includes(newName)) {
-        setErrorMessage(`Folder name "${newName}" is restricted and cannot be created.`);
-        return;
+    selection.setAllSelected(false);
+    setSelectedItems([]);
+  } catch (error) {
+    console.error("Error downloading files:", error);
+    hideToastMessage(loaderToastBottomCenter);
+    showToastMessage(
+      "Download failed",
+      error.message || "An error occurred during download",
+      toastBottomCenter,
+      "error"
+    );
+  }
+};
+
+// Direct file download without creating zip
+const downloadFileDirect = async (file: any, toastBottomCenter: any, showToastMessage: any) => {
+  try {
+    const fileBlob = await sp.web.getFileByServerRelativeUrl(file.Url).getBlob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(fileBlob);
+    link.download = file.name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    // Clean up blob URL to free memory
+    setTimeout(() => URL.revokeObjectURL(link.href), 100);
+    
+    showToastMessage("Download started", `Downloading ${file.name}...`, toastBottomCenter, "success");
+  } catch (error) {
+    console.error(`Failed to download ${file.name}:`, error);
+    showToastMessage(`Failed to download ${file.name}`, "", toastBottomCenter, "error");
+    throw error;
+  }
+};
+
+// Collect all files from selected items (handles folders recursively with batching)
+const collectAllFiles = async (
+  selectedItems: any[],
+  siteRelativeUrl: string,
+  DOCUMENT_LIBRARY: string,
+  loaderToastBottomCenter: any,
+  showToastMessage: any
+): Promise<any[]> => {
+  const allFiles: any[] = [];
+  const processed = new Set<string>();
+
+  for (const item of selectedItems) {
+    if (item.Type === "File") {
+      if (!processed.has(item.Url)) {
+        allFiles.push({
+          url: item.Url,
+          name: item.name,
+          path: ""
+        });
+        processed.add(item.Url);
       }
-
-      const folderRelativeUrl = folderName === ""
-        ? `${siteRelativeUrl}/${DOCUMENT_LIBRARY}`
-        : `${siteRelativeUrl}/${DOCUMENT_LIBRARY}/${folderName}`;
-
-      const folder = sp.web.getFolderByServerRelativePath(folderRelativeUrl);
-
-      await folder.folders.addUsingPath(newName, false).then(async () => {
-        const newFolderViewXml = `
-          <View>
-            <Query>
-              <Where>
-                <And>
-                  <Eq>
-                    <FieldRef Name='FSObjType' />
-                    <Value Type='Integer'>1</Value>
-                  </Eq>
-                  <Eq>
-                    <FieldRef Name='FileLeafRef' />
-                    <Value Type='Text'>${newName}</Value>
-                  </Eq>
-                </And>
-              </Where>
-            </Query>
-            <ViewFields>
-              <FieldRef Name='FileLeafRef'/>
-              <FieldRef Name='FileDirRef'/>
-              <FieldRef Name='FSObjType'/>
-              <FieldRef Name='FileRef'/>
-              <FieldRef Name='Modified'/>
-              <FieldRef Name='Created'/>
-              <FieldRef Name='Editor'/>
-              <FieldRef Name='ItemChildCount'/>
-              <FieldRef Name='FolderChildCount'/>
-              <FieldRef Name='ID'/>
-            </ViewFields>
-            <RowLimit>1</RowLimit>
-          </View>
-        `;
-
-        const newFolderResult = await sp.web.lists.getByTitle(DOCUMENT_LIBRARY)
-          .renderListDataAsStream({
-            FolderServerRelativeUrl: folderRelativeUrl,
-            ViewXml: newFolderViewXml,
-            RenderOptions: 2
-          });
-
-        if (newFolderResult.Row && newFolderResult.Row.length > 0) {
-            const f = newFolderResult.Row[0];
-            const newFolderItem = {
-              name: f.FileLeafRef,
-              Type: "Folder",
-              Url: folderName === "" ? f.FileLeafRef : `${folderName}/${f.FileLeafRef}`,
-              icon: "Folder",
-              modified: f["Modified."],
-              created: f["Created."],
-              ServerRelativeUrl: siteRelativeUrl,
-              modifiedBy: f.Editor && f.Editor.length > 0 ? f.Editor[0].title : "Sharepoint App",
-              folderUrl: folderName,
-              folderChildCount: f.FolderChildCount,
-              itemChildCount: f.ItemChildCount,
-              ID: f.ID
-          };
-          setItems(prev => [newFolderItem, ...prev]);
-          setErrorMessage("");
-          setPanelOpen(false);
-          setNewName("");
-          showToastMessage(`Folder "${newName}" created successfully`, '', toastBottomCenter, 'success');
-        }
-      }).catch((error) => {
-        console.error("Error creating folder:", error);
-        error.message.includes("already exists") ? setErrorMessage(`Folder "${newName}" already exists.`) : 
-        error.message.includes("request exceeds the configured maxUrlLength value") ? setErrorMessage(`Folder path is too long. Please choose a shorter name.`) :
-        setErrorMessage("Failed to create folder.");
-        showToastMessage("Failed to create folder", `Failed to create folder "${newName}".`, toastBottomCenter, 'error');
-      });
-    } catch (error) {
-      console.error("Error creating folder:", error);
-      setErrorMessage("Failed to create folder. "+ error.message);
-    }
-  };
-
-  const navigateToFolder = (item: any) => {
-    if (item.Type === "Folder") {
-      setErrorMessage("");
-      pagingInfoRef.current = null; // Reset paging when navigating
-      fetchFilesAndFolders(item.Url);
-
-      // Clear selection after a short delay to ensure UI updates
-      setTimeout(() => {
-        selection.setAllSelected(false);
-      }, 0);
-
-    }
-  };
-
-  const checkUserPermissions = async () => {
-    try {
-      const userGroups = await sp.web.currentUser.groups();
-      const permissions = {
-        CanUpload: userGroups.some((g) => g.Title === permissionGroupName),
-        canRename: userGroups.some((g) => g.Title === permissionGroupName),
-        canDownload: userGroups.some((g) => g.Title === permissionGroupName),
-        canViewVersionHistory: userGroups.some((g) => g.Title === permissionGroupName),
-        canDelete: userGroups.some((g) => g.Title === permissionGroupName),
-      };
-      setPermissions(permissions);
-    } catch (error) {
-      console.error("Error fetching user permissions:", error);
-      setErrorMessage("Failed to check user permissions.");
-    }
-  };
-
-  const fetchVersionHistory = async () => {
-    if (selectedItems.length !== 1 || selectedItems[0].Type !== "File") return;
-
-    setIsLoading(true);
-    try {
-      const file = sp.web.getFileByServerRelativePath(selectedItems[0].Url);
-      const fileVersions: any = await file.versions.select("ID", "Created", "CreatedBy/Title", "Url").expand("CreatedBy")();
-      setVersions(fileVersions);
-      setVersionPanelOpen(true);
-    } catch (error) {
-      console.error("Error fetching version history:", error);
-      setErrorMessage("Failed to fetch version history.");
-    }
-    setIsLoading(false);
-  };
-
-  const renameFile = async () => {
-    if (!selectedItems.length) return;
-    //setIsLoading(true);
-    showToastMessage("Renaming...", "Please wait while we rename the item.", loaderToastBottomCenter, 'info');
-    try {
-      if (selectedItems[0].Type === "Folder") {
-        // Prevent renaming the root folder (which has no associated item)
-        if (!selectedItems[0].Url || selectedItems[0].Url === "" || selectedItems[0].Url === DOCUMENT_LIBRARY) {
-          setErrorMessage("Cannot rename the root folder.");
-        } else {
-          if(newName !== selectedItems[0].name) {
-            await sp.web.lists.getByTitle(DOCUMENT_LIBRARY).items.getById(selectedItems[0].ID).update({ FileLeafRef: newName }).then(async () => {
-              setErrorMessage("");
-              setItems((prev) => prev.map((it) => it.ID === selectedItems[0].ID ? { ...it, name: newName, modified: new Date().toISOString(), Url: folderName === "" ? newName : `${folderName}/${newName}` } : it));
-
-              showToastMessage(`Renamed Successfully from ${selectedItems[0].name} to ${newName}`, '', toastBottomCenter, 'success');
-            });
-          }
-        }
-      } else {
-        const selectedFile = selectedItems[0];
-        const fileExt = selectedFile.name.split(".").pop();
-        //const newFileName = newName.includes(".") ? newName : `${newName}.${fileExt}`;
-        const newFileName = fileExt ? `${newName}.${fileExt}` : newName;
-        if (newFileName !== selectedFile.name)
-        {
-          await sp.web.lists.getByTitle(DOCUMENT_LIBRARY).items.getById(selectedFile.ID).update({ FileLeafRef: newFileName }).then(() => {
-            setErrorMessage("");
-            setItems((prev) => prev.map((it) => it.ID === selectedFile.ID ? { ...it, name: newFileName, modified: new Date().toISOString(), Url: folderName === "" ? newFileName : `${selectedFile.Url.split("/").slice(0, -1).join("/")}/${newFileName}` } : it));
-
-            showToastMessage(`Renamed Successfully from ${selectedFile.name} to ${newFileName}`, '', toastBottomCenter, 'success');
-          });
-        }
-      }
-      setPanelOpen(false);
-      selection.setAllSelected(false);
-      setSelectedItems([]);
-    } catch (error) {
-      console.error("Error renaming item:", error);
-      setErrorMessage("Failed to rename item. "+ (error.message.includes("already exists") ? `An item with the name "${newName}" already exists.` : (error.message.includes("request exceeds the configured maxUrlLength value") || error.message.includes("name is too long") ? `Path is too long. Please choose a shorter name.` : error.message)));
-    } finally {
-      setIsLoading(false);
-      hideToastMessage(loaderToastBottomCenter);
-    }
-  };
-
-  const downloadFiles = async () => {
-    //setIsLoading(true);
-    try{
-      showToastMessage("Preparing download...", "Please wait while we prepare your download.", loaderToastBottomCenter, 'info', true);
-      const selectedItems: any = selection.getSelection();
-      if (selectedItems.length === 1 && selectedItems[0].Type === "File") {
-        await downloadFile(selectedItems[0]);
-        selection.setAllSelected(false);
-        setSelectedItems([]);
-        hideToastMessage(loaderToastBottomCenter);
-        return;
-      }
-      const zip = new JSZip();
-      const downloadPromises = selectedItems.map(async (item: any) => {
-        if (item.Type === "File") {
-          const fileBlob = await sp.web.getFileByServerRelativeUrl(`${item.Url}`).getBlob();
-          zip.file(item.name, fileBlob);
-        } else {
-          await addFolderToZip(zip, item.Url, item.name);
-        }
-      });
-      await Promise.all(downloadPromises);
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      saveAs(zipBlob, "Documents.zip");
-      //setIsLoading(false);
-      showToastMessage("Downloaded successfully", "", toastBottomCenter, 'success');
-      hideToastMessage(loaderToastBottomCenter);
-      selection.setAllSelected(false);
-      setSelectedItems([]);
-    } catch (error) {
-      console.error("Error downloading files:", error);
-      setErrorMessage("Failed to download files.");
-      hideToastMessage(loaderToastBottomCenter);
-      showToastMessage("Failed to download files", "", toastBottomCenter, 'error');
-    }
-  };
-
-  const downloadFile = async (file: any) => {
-    try {
-      const fileBlob = await sp.web.getFileByServerRelativeUrl(file.Url).getBlob();
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(fileBlob);
-      link.download = file.name;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setIsLoading(false);
-    } catch (error) {
-      console.error(`Failed to download ${file.name}:`, error);
-      showToastMessage(`Failed to download ${file.name}`, "", toastBottomCenter, 'error');
+    } else {
+      showToastMessage(
+        "Scanning folder...",
+        `Scanning ${item.name}...`,
+        loaderToastBottomCenter,
+        "info",
+        true
+      );
+      const folderFiles = await collectFolderFilesOptimized(
+        item.Url,
+        item.name,
+        siteRelativeUrl,
+        DOCUMENT_LIBRARY,
+        processed
+      );
+      allFiles.push(...folderFiles);
     }
   }
 
-  const addFolderToZip = async (zip: any, folderUrl: any, folderName: any) => {
-    const folderNameUrl = folderUrl.includes(siteRelativeUrl) ? folderUrl : `${siteRelativeUrl}/${DOCUMENT_LIBRARY}/${folderUrl}`;
-    const folder = sp.web.getFolderByServerRelativeUrl(`${folderNameUrl}`);
-    const files = await folder.files();
-    const subfolders = await folder.folders();
-
-    const folderZip = zip.folder(folderName);
-    const filePromises = files.map(async (file: any) => {
-      const fileBlob = await sp.web.getFileByServerRelativeUrl(file.ServerRelativeUrl).getBlob();
-      folderZip.file(file.Name, fileBlob);
-    });
-    const subfolderPromises = subfolders.map(async (subfolder: any) => {
-      await addFolderToZip(folderZip, subfolder.ServerRelativeUrl, subfolder.Name);
-    });
-
-    await Promise.all([...filePromises, ...subfolderPromises]);
-  };
-
-  const deleteItems = async (items: any[]) => {
-    const restrictedFolders1: any = restrictedFolders;
-    try {
-      //setIsLoading(true);
-      showToastMessage("Deleting item(s)...", "Please wait while your item(s) are being deleted.", loaderToastBottomCenter, 'info', true);
-      setSelectedItems([]);
-      const deletedItems = [];
-      for (const item of items) {
-        if (restrictedFolders1.includes(item.name)) {
-          console.warn(`Skipping deletion of restricted folder: ${item.name}`);
-          continue;
-        }
-        if (item.Type === 'Folder') {
-          await sp.web.getFolderByServerRelativeUrl(`${siteRelativeUrl}/${DOCUMENT_LIBRARY}/${item.Url}`).recycle().then(() => {
-            deletedItems.push(item.ID);
-          });
-        } else {
-          await sp.web.getFileByServerRelativeUrl(item.Url).recycle().then(() => {
-            deletedItems.push(item.ID);
-          });
-        }
-      }
-      setItems((prev) => prev.filter((item) => !deletedItems.includes(item.ID)));
-      selection.setAllSelected(false);
-      setSelectedItems([]);
-      showToastMessage(`Deleted ${deletedItems.length} item(s) successfully`, '', toastBottomCenter, 'success');
-    } catch (error) {
-      console.error('Failed to delete items:', error);
-      showToastMessage(`Failed to delete items`, "", toastBottomCenter, 'error');
-    }
-    finally {
-      //setIsLoading(false);
-      hideToastMessage(loaderToastBottomCenter);
-    }
-  };
-
-  return (
-    <div className="classic-ui">
-      <div className="toastcontainer">
-        <Toast ref={toastBottomCenter} position="bottom-center"/>
-        <Toast ref={loaderToastBottomCenter} 
-        content={({message})=>(
-          <section className="toast-message-container">
-            <div className="toast-message-content">
-              <p className="toast-message-summary">{message.summary}</p>
-              <p className="toast-message-detail">{message.detail}</p>
-              <div className="toast-progress-wrapper">
-                <ProgressBar mode="indeterminate" className="toast-progress-bar" />
-              </div>
-            </div>
-          </section>
-        )}
-        position="bottom-center" />
-      </div>
-
-      {errorMessage && (
-        <MessageBar messageBarType={MessageBarType.error}>
-          {errorMessage}
-        </MessageBar>
-      )}
-
-      <Breadcrumbs
-        breadcrumbs={breadcrumbs}
-        fetchFilesAndFolders={fetchFilesAndFolders}
-      // style={{ marginBottom: '8px' }}
-      />
-
-      <DocumentCommandBar
-        permissions={permissions}
-        selection={selection}
-        selectedItems={selectedItems}
-        downloadFiles={downloadFiles}
-        deleteItems={deleteItems}
-        setPanelOpen={setPanelOpen}
-        fetchVersionHistory={fetchVersionHistory}
-        forceUpdate={forceUpdate}
-        setName={setNewName}
-        setErrorMessage={setErrorMessage}
-        restrictedFolders={restrictedFolders}
-        setActionType={setActionType}
-        uploadFile={uploadFile}
-        createFolder={createFolder}
-        setSearchKeyword={setSearchKeyword}
-        searchKeyword={searchKeyword}
-      />
-
-      {/* {isLoading && <Spinner label="Loading..." />} */}
-
-      {searchKeyword && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            margin: '12px 0',
-            flexWrap: 'wrap',
-            justifyContent: 'space-between' // Spread items to edges
-          }}
-        >
-          {/* Left side: Search keyword pill */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                background: '#f3f2f1',
-                borderRadius: '16px',
-                padding: '4px 12px',
-                fontSize: '14px',
-                color: '#323130',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.04)'
-              }}
-            >
-              <span>Keyword: <strong>{searchKeyword}</strong></span>
-              <span
-                style={{
-                  cursor: 'pointer',
-                  marginLeft: '8px',
-                  display: 'flex',
-                  alignItems: 'center'
-                }}
-                title="Clear search"
-                onClick={() => setSearchKeyword("")}
-              >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 1 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 1 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z" fill="#605e5c"/>
-                </svg>
-              </span>
-            </div>
-          </div>    
-        </div>
-      )}
-
-      <div style={{ height: "auto", overflowY: 'auto' }}>
-        <DocumentDetailsList items={items} selection={selection} navigateToFolder={navigateToFolder} />
-          {pagingInfoRef.current && hasMoreItems && (
-            <Spinner style={{ margin: '16px 0' }} label="Loading items..." />
-          )}
-          {!isLoading && hasMoreItems && (
-            <div ref={ref}></div>
-          )}
-
-        {!isLoading && items.length === 0 && (
-          <div style={{ textAlign: 'center', marginTop: '40px', color: '#605e5c' }}>
-            <p style={{ fontSize: '16px' }}>No files or folders found.</p>
-          </div>
-        )}
-      </div>
-
-      <VersionHistoryPanel
-        errorMessage={errorMessage}
-        isOpen={isVersionPanelOpen}
-        versions={versions}
-        onClose={() => setVersionPanelOpen(false)}
-      />
-
-      <DocumentDialogs
-        isPanelOpen={isPanelOpen}
-        setPanelOpen={setPanelOpen}
-        name={newName}
-        setName={setNewName}
-        setErrorMessage={setErrorMessage}
-        actionType={actionType}
-        performAction={actionType === 'rename' ? renameFile : createFolder}
-        fileExtention={selectedItems.length === 1 && selectedItems[0].Type === "File" ? selectedItems[0].name.split(".").pop() : ""}
-        errorMessage={errorMessage}
-      />
-    </div>
-
-  )
+  return allFiles;
 };
 
-export default DocumentLibrary;
+// Optimized folder file collection using batched queries to avoid list threshold
+const collectFolderFilesOptimized = async (
+  folderUrl: string,
+  folderName: string,
+  siteRelativeUrl: string,
+  DOCUMENT_LIBRARY: string,
+  processed: Set<string>,
+  basePath: string = ""
+): Promise<any[]> => {
+  const files: any[] = [];
+  const currentPath = basePath ? `${basePath}/${folderName}` : folderName;
+
+  try {
+    const folderRelativeUrl = folderUrl.includes(siteRelativeUrl)
+      ? folderUrl
+      : `${siteRelativeUrl}/${DOCUMENT_LIBRARY}/${folderUrl}`;
+
+    // Use batched CAML query to get items efficiently
+    let position: string | null = null;
+    let hasMore = true;
+
+    while (hasMore) {
+      const ViewXml = `
+        <View Scope="RecursiveAll">
+          <ViewFields>
+            <FieldRef Name='FileLeafRef'/>
+            <FieldRef Name='FileRef'/>
+            <FieldRef Name='FSObjType'/>
+            <FieldRef Name='FileDirRef'/>
+          </ViewFields>
+          <Query>
+            <Where>
+              <Eq>
+                <FieldRef Name='FSObjType' />
+                <Value Type='Integer'>0</Value>
+              </Eq>
+            </Where>
+          </Query>
+          <RowLimit Paged='TRUE'>${LIST_THRESHOLD_BATCH}</RowLimit>
+        </View>
+      `;
+
+      const result = await sp.web.lists
+        .getByTitle(DOCUMENT_LIBRARY)
+        .renderListDataAsStream({
+          FolderServerRelativeUrl: folderRelativeUrl,
+          ViewXml: ViewXml,
+          Paging: position,
+          RenderOptions: 2
+        });
+
+      // Process files from this batch
+      for (const item of result.Row) {
+        if (item.FSObjType === "0" && !processed.has(item.FileRef)) {
+          // Calculate relative path within the zip
+          const itemPath = item.FileDirRef.replace(folderRelativeUrl, "").replace(/^\//, "");
+          const fullPath = itemPath ? `${currentPath}/${itemPath}` : currentPath;
+
+          files.push({
+            url: item.FileRef,
+            name: item.FileLeafRef,
+            path: fullPath
+          });
+          processed.add(item.FileRef);
+        }
+      }
+
+      // Check if there are more items
+      position = result.NextHref || null;
+      hasMore = !!position;
+
+      // Small delay to avoid throttling
+      if (hasMore) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+  } catch (error) {
+    console.error(`Error collecting files from folder ${folderName}:`, error);
+    throw error;
+  }
+
+  return files;
+};
+
+// Split files into groups based on size and count limits
+const splitIntoZipGroups = (files: any[]): any[][] => {
+  const groups: any[][] = [];
+  let currentGroup: any[] = [];
+  let currentSize = 0;
+
+  for (const file of files) {
+    // Estimate file size (we'll check actual size during download)
+    // Add to current group if under limits
+    if (currentGroup.length >= MAX_FILES_PER_ZIP || currentSize >= MAX_ZIP_SIZE * 0.8) {
+      if (currentGroup.length > 0) {
+        groups.push(currentGroup);
+      }
+      currentGroup = [];
+      currentSize = 0;
+    }
+
+    currentGroup.push(file);
+  }
+
+  if (currentGroup.length > 0) {
+    groups.push(currentGroup);
+  }
+
+  return groups.length > 0 ? groups : [files];
+};
+
+// Create and download a zip file with progress tracking
+const createAndDownloadZip = async (
+  files: any[],
+  zipIndex: number,
+  totalZips: number,
+  totalFiles: number,
+  loaderToastBottomCenter: any,
+  toastBottomCenter: any,
+  showToastMessage: any,
+  siteRelativeUrl: string
+) => {
+  const zip = new JSZip();
+  let processedCount = 0;
+
+  try {
+    // Process files in batches to avoid memory issues
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      const batch = files.slice(i, i + BATCH_SIZE);
+
+      showToastMessage(
+        `Creating zip ${zipIndex + 1}/${totalZips}...`,
+        `Processing files ${processedCount + 1}-${Math.min(processedCount + batch.length, files.length)} of ${files.length}...`,
+        loaderToastBottomCenter,
+        "info",
+        true
+      );
+
+      // Download files in parallel within batch
+      const batchPromises = batch.map(async (file) => {
+        try {
+          const fileBlob = await sp.web.getFileByServerRelativeUrl(file.url).getBlob();
+          const filePath = file.path ? `${file.path}/${file.name}` : file.name;
+          zip.file(filePath, fileBlob);
+        } catch (error) {
+          console.error(`Failed to add ${file.name} to zip:`, error);
+          // Continue with other files even if one fails
+        }
+      });
+
+      await Promise.all(batchPromises);
+      processedCount += batch.length;
+
+      // Small delay between batches to prevent throttling
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    // Generate and download zip
+    showToastMessage(
+      `Generating zip ${zipIndex + 1}/${totalZips}...`,
+      "Compressing files, please wait...",
+      loaderToastBottomCenter,
+      "info",
+      true
+    );
+
+    const zipBlob = await zip.generateAsync(
+      { type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } },
+      (metadata) => {
+        // Progress callback during zip generation
+        const percent = metadata.percent.toFixed(0);
+        showToastMessage(
+          `Generating zip ${zipIndex + 1}/${totalZips}...`,
+          `Compression progress: ${percent}%`,
+          loaderToastBottomCenter,
+          "info",
+          true
+        );
+      }
+    );
+
+    const zipFileName = totalZips > 1 ? `Documents_Part${zipIndex + 1}.zip` : "Documents.zip";
+    saveAs(zipBlob, zipFileName);
+
+    showToastMessage(
+      `Zip ${zipIndex + 1}/${totalZips} ready`,
+      `${zipFileName} is downloading...`,
+      toastBottomCenter,
+      "success"
+    );
+
+    // Clear zip from memory
+    zip.remove(/.*/);
+  } catch (error) {
+    console.error(`Error creating zip ${zipIndex + 1}:`, error);
+    throw error;
+  }
+};
+
+// Updated addFolderToZip function (for backward compatibility, but not used in optimized flow)
+export const addFolderToZipOptimized = async (
+  zip: any,
+  folderUrl: any,
+  folderName: any,
+  siteRelativeUrl: string,
+  DOCUMENT_LIBRARY: string
+) => {
+  const folderNameUrl = folderUrl.includes(siteRelativeUrl)
+    ? folderUrl
+    : `${siteRelativeUrl}/${DOCUMENT_LIBRARY}/${folderUrl}`;
+
+  // Use the optimized collection method
+  const files = await collectFolderFilesOptimized(
+    folderUrl,
+    folderName,
+    siteRelativeUrl,
+    DOCUMENT_LIBRARY,
+    new Set<string>()
+  );
+
+  // Add files to zip in batches
+  for (let i = 0; i < files.length; i += BATCH_SIZE) {
+    const batch = files.slice(i, i + BATCH_SIZE);
+    const batchPromises = batch.map(async (file) => {
+      try {
+        const fileBlob = await sp.web.getFileByServerRelativeUrl(file.url).getBlob();
+        const filePath = file.path ? `${file.path}/${file.name}` : file.name;
+        zip.file(filePath, fileBlob);
+      } catch (error) {
+        console.error(`Failed to add ${file.name}:`, error);
+      }
+    });
+    await Promise.all(batchPromises);
+    
+    // Delay between batches
+    if (i + BATCH_SIZE < files.length) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
+};
+
+// Example usage in your component:
+// Replace your existing downloadFiles function with:
+// 
+// const downloadFiles = async () => {
+//   await downloadFilesOptimized(
+//     selection,
+//     setSelectedItems,
+//     loaderToastBottomCenter,
+//     toastBottomCenter,
+//     showToastMessage,
+//     hideToastMessage,
+//     siteRelativeUrl,
+//     DOCUMENT_LIBRARY
+//   );
+// };
