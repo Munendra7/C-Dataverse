@@ -1,8 +1,6 @@
-// downloadHelper.ts
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
 
-/** Your selection item shape */
 export type SelectedItem = {
   Type: "File" | "Folder";
   name: string;
@@ -20,9 +18,9 @@ export type DownloadCallbacks = {
 };
 
 export type DownloadOptions = {
-  sp: any;                         // SPFI or 'sp' from @pnp/sp
-  siteRelativeUrl: string;         // "/sites/YourSite"
-  documentLibrary: string;         // "Documents"
+  sp: any;
+  siteRelativeUrl: string;
+  documentLibrary: string;
   selected: SelectedItem[];
   // Cap per ZIP part (default 500MB)
   maxZipSizeBytes?: number;
@@ -70,7 +68,8 @@ export async function downloadItemsMultiZip(options: DownloadOptions): Promise<v
     if (selected.length === 1 && selected[0].Type === "File") {
       clear?.();
       const file = selected[0];
-      window.location.href = `${siteRelativeUrl}/_layouts/download.aspx?sourceUrl=${encodeURIComponent(file.Url)}`;
+      const encodedUrl = `${siteRelativeUrl}/_layouts/download.aspx?sourceUrl=${encodeURIComponent(file.Url)}`;
+      window.location.href = encodedUrl;
       success?.("Download started", file.name);
       return;
     }
@@ -80,11 +79,13 @@ export async function downloadItemsMultiZip(options: DownloadOptions): Promise<v
     // Build flat list of files to download (zip entries), with sizes
     const zipEntries: Array<{ zipPath: string; serverRelativeUrl: string; size: number }> = [];
 
-    // Add FILEs
+    // Add FILEs (preserve folder structure)
     for (const item of selected) {
       if (item.Type === "File") {
         const size = await getFileSizeRLDAS(sp, documentLibrary, item.Url);
-        zipEntries.push({ zipPath: item.name, serverRelativeUrl: item.Url, size });
+        // Get relative path from document library root
+        const relPath = item.Url.split(`/${documentLibrary}/`)[1] || item.name;
+        zipEntries.push({ zipPath: relPath, serverRelativeUrl: item.Url, size });
       }
     }
 
@@ -110,21 +111,23 @@ export async function downloadItemsMultiZip(options: DownloadOptions): Promise<v
         "A file exceeds the ZIP part size",
         `“${big.zipPath}” is ${(big.size / (1024 * 1024)).toFixed(0)} MB, larger than the part cap. Downloading it directly.`
       );
-      window.location.href = `${siteRelativeUrl}/_layouts/download.aspx?sourceUrl=${encodeURIComponent(big.serverRelativeUrl)}`;
-      // Continue with remaining items (excluding the huge one)
+      const encodedUrl = `${siteRelativeUrl}/_layouts/download.aspx?sourceUrl=${encodeURIComponent(big.serverRelativeUrl)}`;
+      window.location.href = encodedUrl;
       const remaining = zipEntries.filter(e => e !== big);
       if (remaining.length === 0) {
         success?.("Download started", big.zipPath);
         return;
       }
       start?.("Preparing remaining items...", "Large file sent to native download.");
-      await multiZipAndSave(remaining, maxZipSizeBytes, maxParts, progress, clear, selected);
+      await multiZipAndSave(remaining, maxZipSizeBytes, maxParts, progress, warn, () => {}, selected); // Don't clear loader until all done
+      clear?.();
       success?.("Downloads ready", "One native + multi-part ZIP(s) saved.");
       return;
     }
 
     // All good -> multi-zip
-    await multiZipAndSave(zipEntries, maxZipSizeBytes, maxParts, progress, clear, selected);
+    await multiZipAndSave(zipEntries, maxZipSizeBytes, maxParts, progress, warn, () => {}, selected); // Don't clear loader until all done
+    clear?.();
     success?.("Downloads ready", "Your ZIP parts have been saved.");
   } catch (e: any) {
     console.error("downloadItemsMultiZip error:", e);
@@ -135,13 +138,12 @@ export async function downloadItemsMultiZip(options: DownloadOptions): Promise<v
   }
 }
 
-/* -------------------- internals -------------------- */
-
 async function multiZipAndSave(
   entries: Array<{ zipPath: string; serverRelativeUrl: string; size: number }>,
   maxZipSizeBytes: number,
   maxParts: number | undefined,
   progress: (s: string, d?: string) => void,
+  warn: (s: string, d?: string) => void,
   clear: () => void,
   selected: SelectedItem[]
 ) {
@@ -152,6 +154,7 @@ async function multiZipAndSave(
   const totalFiles = entries.length;
 
   let zip = new JSZip();
+  const failedFiles: string[] = [];
 
   // Helper to finalize and save the current part
   const finalizePart = async () => {
@@ -167,37 +170,55 @@ async function multiZipAndSave(
         }
       }
     );
-    clear();
     saveAs(blob, suggestedZipPartName(selected, part));
   };
 
-  for (const entry of entries) {
-    // Need a new part?
-    if (filesInPart > 0 && (bytesInPart + entry.size) > maxZipSizeBytes) {
-      await finalizePart();
-
-      // Next part
-      part++;
-      if (maxParts && part > maxParts) {
-        throw new Error(`Reached max parts (${maxParts}). Please reduce selection or increase limit.`);
+  // Concurrency pool for downloads
+  const CONCURRENCY = 10;
+  let i = 0;
+  while (i < entries.length) {
+    const batch = entries.slice(i, i + CONCURRENCY);
+    // Download all files in the batch concurrently
+    await Promise.all(batch.map(async (entry) => {
+      // Need a new part?
+      if (filesInPart > 0 && (bytesInPart + entry.size) > maxZipSizeBytes) {
+        await finalizePart();
+        part++;
+        if (maxParts && part > maxParts) {
+          throw new Error(`Reached max parts (${maxParts}). Please reduce selection or increase limit.`);
+        }
+        zip = new JSZip();
+        bytesInPart = 0;
+        filesInPart = 0;
       }
-      zip = new JSZip();
-      bytesInPart = 0;
-      filesInPart = 0;
-    }
-
-    // Fetch blob (throttling-safe) and add to zip
-    progress("Downloading files…", `${totalProcessed + 1} / ${totalFiles}`);
-    const blob = await getBlobWithRetryGlobal(entry.serverRelativeUrl);
-    zip.file(entry.zipPath, blob);
-    bytesInPart += entry.size || blob.size || 0;
-    filesInPart++;
-    totalProcessed++;
+      // Fetch blob and add to zip
+      const encodedServerRelativeUrl = encodeURI(entry.serverRelativeUrl);
+      try {
+        const blob = await getBlobWithRetryGlobal(encodedServerRelativeUrl);
+        zip.file(entry.zipPath, blob);
+        bytesInPart += entry.size || blob.size || 0;
+        filesInPart++;
+      } catch (err) {
+        console.error(`Failed to fetch file: ${entry.zipPath}`, err);
+        failedFiles.push(entry.zipPath);
+      }
+      totalProcessed++;
+      progress("Downloading files…", `${totalProcessed} / ${totalFiles}`);
+    }));
+    // Only after all in batch are done, move to next batch
+    i += CONCURRENCY;
   }
 
   // Save final part (if it has any files)
   if (filesInPart > 0) {
     await finalizePart();
+  }
+
+  if (failedFiles.length > 0) {
+    warn(
+        "Some files could not be downloaded",
+        `Failed files count: ${failedFiles.length}`
+      );
   }
 }
 
@@ -218,13 +239,9 @@ function sanitizeFileName(name: string) {
   return name.replace(/[\\/:*?"<>|]/g, "_");
 }
 
-/* -------------------- SharePoint helpers -------------------- */
-
-// Global store for sp + retry; set once per call for simplicity
 let __spForRetry: any = null;
 export function setSpForRetry(sp: any) { __spForRetry = sp; }
 
-// throttling-safe wrapper
 async function spCallWithRetry<T>(fn: () => Promise<T>, context: string, maxRetries = 5): Promise<T> {
   let attempt = 0;
   while (true) {
@@ -232,13 +249,11 @@ async function spCallWithRetry<T>(fn: () => Promise<T>, context: string, maxRetr
       return await fn();
     } catch (err: any) {
       const status = err?.status || err?.data?.status || err?.httpStatus || 0;
-      const isThrottle = status === 429 || status === 503;
+      const isThrottle = status === 429 || status === 503 || status === 406;
       if (!isThrottle || attempt >= maxRetries) throw err;
 
-      const retryAfterHeader = err?.response?.headers?.get?.("Retry-After");
-      const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : 0;
       const jitter = Math.floor(Math.random() * 250);
-      const backoff = retryAfterMs || Math.min(2 ** attempt * 750, 8000) + jitter;
+      const backoff = Math.max(2 ** attempt * 10000, 10000) + jitter;
 
       console.warn(`[Retry ${attempt + 1}/${maxRetries}] ${context} due to ${status}. Waiting ${backoff}ms`);
       await new Promise((r) => setTimeout(r, backoff));
@@ -287,7 +302,7 @@ async function getFileSizeRLDAS(sp: any, documentLibrary: string, fileRef: strin
     FolderServerRelativeUrl: folderPath,
     ViewXml,
     RenderOptions: 2,
-  });
+  }) as { Row?: any[] };
   const r = resp?.Row?.[0];
   return Number(r?.["File_x0020_Size"] ?? 0);
 }
@@ -316,10 +331,10 @@ async function addFolderFilesRLDAS(
       </ViewFields>
       <Query>
         <Where>
-          <Eq>
-            <FieldRef Name='FSObjType'/>
-            <Value Type='Integer'>0</Value>
-          </Eq>
+            <Eq>
+                <FieldRef Name='FSObjType'/>
+                <Value Type='Integer'>0</Value>
+            </Eq>
         </Where>
       </Query>
       <RowLimit Paged='TRUE'>2000</RowLimit>
@@ -334,7 +349,7 @@ async function addFolderFilesRLDAS(
       ViewXml,
       Paging: paging,
       RenderOptions: 2,
-    });
+    }) as { Row?: any[]; NextHref?: string };
 
     for (const r of resp?.Row ?? []) {
       if ((r.FSObjType ?? "0").toString() !== "0") continue;
@@ -349,47 +364,3 @@ async function addFolderFilesRLDAS(
     if (!next) break;
   }
 }
-
-
-
-
-
-import { downloadItemsMultiZip, setSpForRetry } from "./downloadHelper"; // adjust path
-
-// inside your component:
-const isDownloadingRef = React.useRef<boolean>(false);
-
-// simple wrappers using your existing toasts:
-const startLoader = (s: string, d?: string) => showToastMessage(s, d || "", loaderToastBottomCenter, "info", true);
-const updateLoader = (s: string, d?: string) => { hideToastMessage(loaderToastBottomCenter); showToastMessage(s, d || "", loaderToastBottomCenter, "info", true); };
-const clearLoader = () => hideToastMessage(loaderToastBottomCenter);
-
-// Use this in your existing handler:
-const downloadFiles = async () => {
-  const selected = selection.getSelection() as any[]; // matches SelectedItem
-
-  // Provide sp once for retry-enabled calls
-  setSpForRetry(sp);
-
-  await downloadItemsMultiZip({
-    sp,
-    siteRelativeUrl,
-    documentLibrary: DOCUMENT_LIBRARY,
-    selected,
-    maxZipSizeBytes: 500 * 1024 * 1024, // 500 MB per part (tweak as needed)
-    // maxParts: 10, // optional safety bound
-    inProgressRef: isDownloadingRef,
-    callbacks: {
-      onStart: startLoader,
-      onProgress: updateLoader,
-      onClear: clearLoader,
-      onSuccess: (s, d) => showToastMessage(s, d || "", toastBottomCenter, "success"),
-      onWarn: (s, d) => showToastMessage(s, d || "", toastBottomCenter, "warn"),
-      onError: (s, d) => showToastMessage(s, d || "", toastBottomCenter, "error"),
-    },
-  });
-
-  // Optional: clear selection
-  selection.setAllSelected(false);
-  setSelectedItems([]);
-};
